@@ -23,6 +23,7 @@ You must follow all these rules:
     - Follow SOLID principles (e.g., single responsibility, dependency inversion) where applicable.
     - Don't write duplicate functions or duplicate functionality.
     - Avoid repeating code; reuse existing functionality when possible.
+    - DO NOT over-engineer code!
 
 - Documentation:
     - Log completed work in `./progress.md` and next steps in `./TODO.md`.
@@ -44,6 +45,14 @@ You must follow all these rules:
 - Security:
     - Implement security best-practices to protect against vulnerabilities.
 
+- For bash/sh/zsh/fish code only
+    - Use `[[ ]]` instead of `[ ]`
+    - Use `"$()"` instead of `` ``
+    - Handle errors gracefully
+    - Use `set -euo pipefail`
+    - Follow shellcheck conventions and rules
+    - Use `"${VAR}"` instead of `"$VAR"`
+
 - For Python code only
     - Above all, follow PEP8, Pylint, Flake8, and Pydocstyle, rules. This is your priority.
     - When opening files, specify an encoding, like this: `with open(file, "w", encoding="utf-u") as f:`
@@ -55,7 +64,38 @@ You must follow all these rules:
     - Use full type hints wherever possible for functions and variables, like this: `func(arg1: str, arg2: str) -> str:`
     - Include a docstring for the module as a whole.
     - Don't use inline comments. Instead, put the comment on the line before the relevant code.
-    - All comments should have a period at the end, like this: `# This is a comment.`
+    - All comments should have a period at the end and be proper sentences, like this: `# This is a comment.`
     - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
+    - Here is an example of a correct docstring. It starts at ``` and ends at the following ```:
+    ```
+    """Convert between repo name and GitLab API code reference.
+
+    Args:
+        repo_id_or_name (str): The repository ID or name to convert.
+
+    Returns:
+        tuple: A tuple containing (repo_id, repo_name).
+
+    Raises:
+        ValueError: If the input is not a valid repository ID or name.
+    """
+    ```
+    - Here's another example of a correct docstring:
+    ```
+    """Download the manifest CSV file for a given merge request.
+
+    Args:
+        mr (dict): The merge request object.
+        cr_number (str): The CR number associated with the MR.
+
+    Returns:
+        str or None: The local file path if successful, otherwise None.
+    """
+    ```
+
 
 - Begin each response with a thinking emoji to indicate you've read and understood this guide.
+
+- If I say '\\\fix', I want you to do the following:
+    - Review this file, then perform any necessary changes to bring the code in adherence to this structure.
+    - Improve the code according to the guidelines in this file.
