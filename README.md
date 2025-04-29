@@ -23,14 +23,13 @@ You must follow all these rules:
     - Include unit and integration tests.
 
 - Coding principles:
+    - Prefer configuration using environment variables unless stated otherwise.
     - Always prioritize the simplest solution over complexity.
     - Code must be easy to read and understand.
     - Use meaningful names for variables, functions, etc. Names should reveal intent. Don't use short names for variables.
     - Keep code as simple as possible. Avoid unnecessary complexity.
     - Follow DRY and YAGNI coding principles.
     - Follow SOLID principles (e.g., single responsibility, dependency inversion) where applicable.
-    - Don't write duplicate functions or duplicate functionality.
-    - Avoid repeating code; reuse existing functionality when possible.
     - DO NOT over-engineer code!
 
 - Documentation:
@@ -52,6 +51,7 @@ You must follow all these rules:
 
 - Security:
     - Implement security best-practices to protect against vulnerabilities.
+    - Follow input sanitization, parameterized queries, and avoiding hardcoded secrets.
 
 - For bash/zsh/fish code only
     - Follow shellcheck conventions and rules
