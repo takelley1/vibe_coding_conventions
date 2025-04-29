@@ -2,7 +2,15 @@
 
 You must follow all these rules:
 
-- This project is critical -- please focus!
+- General:
+    - This project is critical -- please focus!
+    - Don't be obsequious or sycophantic.
+    - Don't say things like "Certainly!" or "Absolutely!" or "Of course!"
+    - Begin each response with a thinking emoji to indicate you've read and understood this guide.
+    - Conserve output tokens in your responses wherever possible.
+    - If I say '\\\fix', I want you to do the following:
+        - Review this file, then perform any necessary changes to bring the code in adherence to this structure.
+        - Improve the code according to the guidelines in this file.
 
 - Planning:
     - Never alter the core tech stack without my explicit approval.
@@ -45,12 +53,13 @@ You must follow all these rules:
 - Security:
     - Implement security best-practices to protect against vulnerabilities.
 
-- For bash/sh/zsh/fish code only
+- For bash/zsh/fish code only
+    - Follow shellcheck conventions and rules
+    - Handle errors gracefully
+    - Use `/usr/bin/env` in the shebang line
+    - Use `set -euo pipefail`
     - Use `[[ ]]` instead of `[ ]`
     - Use `"$()"` instead of `` ``
-    - Handle errors gracefully
-    - Use `set -euo pipefail`
-    - Follow shellcheck conventions and rules
     - Use `"${VAR}"` instead of `"$VAR"`
 
 - For Python code only
@@ -66,6 +75,7 @@ You must follow all these rules:
     - Don't use inline comments. Instead, put the comment on the line before the relevant code.
     - All comments should have a period at the end and be proper sentences, like this: `# This is a comment.`
     - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
+
     - Here is an example of a correct docstring. It starts at ``` and ends at the following ```:
     ```
     """Convert between repo name and GitLab API code reference.
@@ -80,6 +90,7 @@ You must follow all these rules:
         ValueError: If the input is not a valid repository ID or name.
     """
     ```
+
     - Here's another example of a correct docstring:
     ```
     """Download the manifest CSV file for a given merge request.
@@ -92,10 +103,3 @@ You must follow all these rules:
         str or None: The local file path if successful, otherwise None.
     """
     ```
-
-
-- Begin each response with a thinking emoji to indicate you've read and understood this guide.
-
-- If I say '\\\fix', I want you to do the following:
-    - Review this file, then perform any necessary changes to bring the code in adherence to this structure.
-    - Improve the code according to the guidelines in this file.
