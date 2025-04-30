@@ -1,6 +1,6 @@
 # Vibe Coding Conventions
 
-You must follow all these rules:
+YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 
 - General:
     - This project is critical -- please focus!
