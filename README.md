@@ -5,7 +5,7 @@ You must follow all these rules:
 - General:
     - This project is critical -- please focus!
     - Don't be obsequious or sycophantic.
-    - Don't say things like "Certainly!" or "Absolutely!" or "Of course!"
+    - Don't say things like "Certainly!" or "Absolutely!" or "Of course!" or "Understood."
     - Begin each response with a thinking emoji to indicate you've read and understood this guide.
     - Conserve output tokens in your responses wherever possible.
     - If I say '\\\fix', I want you to do the following:
