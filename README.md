@@ -1,5 +1,6 @@
 # Vibe Coding Conventions
 
+<instructions>
 YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 
 - General:
@@ -64,7 +65,7 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 
 - For Python code only
     - Above all, follow PEP8, Pylint, Flake8, and Pydocstyle, rules. This is your priority.
-    - When opening files, specify an encoding, like this: `with open(file, "w", encoding="utf-u") as f:`
+    - When opening files, specify an encoding, like this: `with open(file, "w", encoding="utf-8") as f:`
     - Keep lines under 100 characters in length.
     - Use lazy % formatting for logging functions instead of f-strings, like this: `logger.info("Merging file: %s", file_path)`
     - Follow Google's docstring format.
@@ -75,31 +76,45 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - Don't use inline comments. Instead, put the comment on the line before the relevant code.
     - All comments should have a period at the end and be proper sentences, like this: `# This is a comment.`
     - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
+</instructions>
 
-    - Here is an example of a correct docstring. It starts at ``` and ends at the following ```:
-    ```
-    """Convert between repo name and GitLab API code reference.
+- Correct docstring format in Python:
+<example>
+"""Convert between repo name and GitLab API code reference.
 
-    Args:
-        repo_id_or_name (str): The repository ID or name to convert.
+Args:
+    repo_id_or_name (str): The repository ID or name to convert.
 
-    Returns:
-        tuple: A tuple containing (repo_id, repo_name).
+Returns:
+    tuple: A tuple containing (repo_id, repo_name).
 
-    Raises:
-        ValueError: If the input is not a valid repository ID or name.
-    """
-    ```
+Raises:
+    ValueError: If the input is not a valid repository ID or name.
+</example>
 
-    - Here's another example of a correct docstring:
-    ```
-    """Download the manifest CSV file for a given merge request.
+<example>
+"""Download the manifest CSV file for a given merge request.
 
-    Args:
-        mr (dict): The merge request object.
-        cr_number (str): The CR number associated with the MR.
+Args:
+    mr (dict): The merge request object.
+    cr_number (str): The CR number associated with the MR.
 
-    Returns:
-        str or None: The local file path if successful, otherwise None.
-    """
-    ```
+Returns:
+    str or None: The local file path if successful, otherwise None.
+"""
+</example>
+
+- Correct file-handling in Python:
+<example>
+with open(file, "w", encoding="utf-8") as f:
+</example>
+
+- Correct logging format in Python:
+<example>
+logger.info("Merging file: %s", file_path)
+</example>
+
+- Correct function syntax in Python:
+<example>
+def my_function(arg1: str, arg2: str) -> str:
+</example>
