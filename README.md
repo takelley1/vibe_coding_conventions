@@ -55,13 +55,15 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - Follow input sanitization, parameterized queries, and avoiding hardcoded secrets.
 
 - For bash/zsh/fish code only
-    - Follow shellcheck conventions and rules
-    - Handle errors gracefully
-    - Use `/usr/bin/env` in the shebang line
-    - Use `set -euo pipefail`
-    - Use `[[ ]]` instead of `[ ]`
-    - Use `"$()"` instead of `` ``
-    - Use `"${VAR}"` instead of `"$VAR"`
+    - Follow all shellcheck conventions and rules.
+    - Handle errors gracefully.
+    - Use `/usr/bin/env` in the shebang line.
+    - Use `set -euo pipefail`.
+    - Use `[[ ]]` instead of `[ ]`.
+    - Use `"$()"` instead of `` ``.
+    - Use `"${VAR}"` instead of `"$VAR"`.
+    - Don't use arrays unless absolutely necessary.
+    - Use `printf` instead of `echo`.
 
 - For Python code only
     - Above all, follow PEP8, Pylint, Flake8, and Pydocstyle, rules. This is your priority.
@@ -78,6 +80,31 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
 </instructions>
 
+<Shell>
+- Correct shebang example:
+<example>
+#!/usr/bin/env bash
+</example>
+
+- Correct shell options example:
+<example>
+set -euo pipefail
+</example>
+
+- Correct if-statement formatting example:
+<example>
+if [[ -z "${URL}" ]]; then
+  exit 1
+fi
+</example>
+
+- Correct subshell example:
+<example>
+STATUS_CODE="$(curl -s -o /dev/null -w "%{http_code}" "${URL}")"
+</example>
+</Shell>
+
+<Python>
 - Correct docstring format in Python:
 <example>
 """Convert between repo name and GitLab API code reference.
@@ -118,3 +145,4 @@ logger.info("Merging file: %s", file_path)
 <example>
 def my_function(arg1: str, arg2: str) -> str:
 </example>
+</Python>
