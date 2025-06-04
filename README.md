@@ -54,7 +54,7 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - Implement security best-practices to protect against vulnerabilities.
     - Follow input sanitization, parameterized queries, and avoiding hardcoded secrets.
 
-- For bash/zsh/fish code only
+- For bash/zsh/fish code only:
     - Follow all shellcheck conventions and rules.
     - Handle errors gracefully.
     - Use `/usr/bin/env` in the shebang line.
@@ -64,8 +64,9 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - Use `"${VAR}"` instead of `"$VAR"`.
     - Don't use arrays unless absolutely necessary.
     - Use `printf` instead of `echo`.
+    - Encapsulate functionality in functions.
 
-- For Python code only
+- For Python code only:
     - Above all, follow PEP8, Pylint, Flake8, and Pydocstyle, rules. This is your priority.
     - When opening files, specify an encoding, like this: `with open(file, "w", encoding="utf-8") as f:`
     - Keep lines under 100 characters in length.
