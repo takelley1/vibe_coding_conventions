@@ -8,12 +8,13 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 - General:
     - This project is critical -- please focus!
     - Don't be obsequious, sycophantic, excessively apologetic, overly verbose, or overly polite.
-    - Don't say things like "Certainly!" or "Absolutely!" or "Of course!" or "Understood."
+    - Don't say things like "Certainly!", "Absolutely!", "Of course!", "Understood", or "Got it"
     - Be concise—omit pleasantries, avoid repeating the prompt, and skip redundant scaffolding.
     - Begin each response with a thinking emoji to indicate you've read and understood this guide.
     - If I say '\\\fix', I want you to do the following:
         - Review this file, then perform any necessary changes to bring the code in adherence to this structure.
         - Improve the code according to the guidelines in this file.
+        - Refactor and simplify the code as necessary.
 
 - Planning:
     - Never alter the core tech stack without my explicit approval.
@@ -36,9 +37,7 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
     - DO NOT over-engineer code!
 
 - Documentation:
-    - Log completed work in `./progress.md` and next steps in `./TODO.md`.
     - After each component, summarize what’s done.
-    - After major components, write a brief summary in `./docs/[component].md` (e.g., `./docs/login.md`)
 
 - Functions:
     - Functions should be small and do one thing. They should not exceed about 20 lines.
@@ -70,82 +69,89 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 
 - For Python code only:
     - Above all, follow PEP8, Pylint, Flake8, and Pydocstyle, rules. This is your priority.
-    - When opening files, specify an encoding, like this: `with open(file, "w", encoding="utf-8") as f:`
     - Keep lines under 100 characters in length.
-    - Use lazy % formatting for logging functions instead of f-strings, like this: `logger.info("Merging file: %s", file_path)`
     - Follow Google's docstring format.
     - For docstrings, include all arguments, returns, and exceptions.
     - For docstrings, the first line should be in the imperative mood.
-    - Use full type hints wherever possible for functions and variables, like this: `func(arg1: str, arg2: str) -> str:`
     - Include a docstring for the module as a whole.
     - Don't use inline comments. Instead, put the comment on the line before the relevant code.
-    - All comments should have a period at the end and be proper sentences, like this: `# This is a comment.`
     - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
 </instructions>
 
 <Shell>
-- Correct shebang example:
-<example>
-#!/usr/bin/env bash
-</example>
+    - Correct shebang example:
+        <example>
+        #!/usr/bin/env bash
+        </example>
 
-- Correct shell options example:
-<example>
-set -euo pipefail
-</example>
+    - Correct shell options example:
+        <example>
+        set -euo pipefail
+        </example>
 
-- Correct if-statement formatting example:
-<example>
-if [[ -z "${URL}" ]]; then
-  exit 1
-fi
-</example>
+    - Correct if-statement formatting example:
+        <example>
+        if [[ -z "${URL}" ]]; then
+          exit 1
+        fi
+        </example>
 
-- Correct subshell example:
-<example>
-STATUS_CODE="$(curl -s -o /dev/null -w "%{http_code}" "${URL}")"
-</example>
+    - Correct subshell example:
+        <example>
+        STATUS_CODE="$(curl -s -o /dev/null -w "%{http_code}" "${URL}")"
+        </example>
 </Shell>
 
 <Python>
-- Correct docstring format in Python:
-<example>
-"""Convert between repo name and GitLab API code reference.
+    - Correct docstring format in Python:
+        <example>
+        """Convert between repo name and GitLab API code reference.
 
-Args:
-    repo_id_or_name (str): The repository ID or name to convert.
+        Args:
+            repo_id_or_name (str): The repository ID or name to convert.
 
-Returns:
-    tuple: A tuple containing (repo_id, repo_name).
+        Returns:
+            tuple: A tuple containing (repo_id, repo_name).
 
-Raises:
-    ValueError: If the input is not a valid repository ID or name.
-</example>
+        Raises:
+            ValueError: If the input is not a valid repository ID or name.
+        </example>
 
-<example>
-"""Download the manifest CSV file for a given merge request.
+        <example>
+        """Download the manifest CSV file for a given merge request.
 
-Args:
-    mr (dict): The merge request object.
-    cr_number (str): The CR number associated with the MR.
+        Args:
+            mr (dict): The merge request object.
+            cr_number (str): The CR number associated with the MR.
 
-Returns:
-    str or None: The local file path if successful, otherwise None.
-"""
-</example>
+        Returns:
+            str or None: The local file path if successful, otherwise None.
+        """
+        </example>
 
-- Correct file-handling in Python:
-<example>
-with open(file, "w", encoding="utf-8") as f:
-</example>
+    - Correct file-handling in Python:
+        <example>
+        with open(file, "w", encoding="utf-8") as f:
+        </example>
 
-- Correct logging format in Python:
-<example>
-logger.info("Merging file: %s", file_path)
-</example>
+    - Correct logging format in Python:
+        <example>
+        logger.info("Merging file: %s", file_path)
+        </example>
 
-- Correct function syntax in Python:
-<example>
-def my_function(arg1: str, arg2: str) -> str:
-</example>
+    - Correct function syntax in Python:
+        <example>
+        def my_function(arg1: str, arg2: str) -> str:
+        </example>
+
+    - Correct comment format in Python:
+        <example>
+        # This comment has a period at the end and explains useful information.
+        </example>
+
+        <example>
+        # This comment goes over multiple lines.
+        #   You can see how starting from the second line it's indented.
+        #   Here's the third line of the comment.
+        </example>
 </Python>
