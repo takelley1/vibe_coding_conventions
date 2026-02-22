@@ -46,7 +46,6 @@ For each top-level requirement (R1, R2, ...):
 
 # Test Quality Notes
 - Coverage gaps:
-- Flaky risks:
 - Missing negative tests:
 
 # Recommendations
