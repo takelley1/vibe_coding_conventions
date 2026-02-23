@@ -47,6 +47,7 @@ Each leaf task MUST include these exact fields:
 - `Evidence (added by implementer)` with:
   - `Startup preflight tests`
   - `Startup preflight lint`
+  - `Preflight failure report (if preflight failed or NOT_RUN)`
   - `Commands run`
   - `Exit codes`
   - `Artifact/log paths`
@@ -68,13 +69,15 @@ Each leaf task MUST include these exact fields:
 - Confirm Evidence section is complete:
   - Startup preflight tests
   - Startup preflight lint
+  - Preflight failure report (if preflight failed or NOT_RUN)
   - Commands run
   - Exit codes
   - Artifact/log paths
   - Timestamp
   - Test integrity notes
-- Confirm startup preflight status is PASS for tests and lint before leaf work.
   - Out-of-scope failing tests
+- Confirm startup preflight status is recorded before leaf work.
+- If startup preflight failed or was not run, confirm Preflight Failure Report exists and is concrete.
 - Confirm changes stay within the leaf scope and traceability mapping.
 - Confirm tests were not gamed:
   - no deletion of existing tests unless explicitly required by `SPEC.md`
@@ -139,7 +142,8 @@ For each top-level requirement (R1, R2, ...):
 
 <decision_rules>
 - FAIL if any checked requirement lacks required test coverage, gating evidence, or objective acceptance proof.
-- FAIL if startup preflight tests or lint are missing or not PASS for a checked leaf.
+- FAIL if startup preflight evidence fields are missing for a checked leaf.
+- FAIL if startup preflight failed/NOT_RUN and no Preflight Failure Report is provided.
 - FAIL if any required gate cannot run.
 - FAIL if any required gate fails due to in-scope changes.
 - FAIL if evidence fields are missing for any checked leaf.
@@ -147,6 +151,7 @@ For each top-level requirement (R1, R2, ...):
 - FAIL if test-gaming behavior is detected.
 - FAIL if a leaf was marked complete while in-scope tests or required gates were failing.
 - PASS WITH NITS if requirements are met but minor maintainability issues remain.
+- PASS WITH NITS if startup preflight failed but is properly documented and leaf requirements are met.
 - PASS WITH NITS if only documented out-of-scope/pre-existing test failures remain.
 - PASS only if all checked requirements and gates are cleanly satisfied with reproducible evidence.
 </decision_rules>

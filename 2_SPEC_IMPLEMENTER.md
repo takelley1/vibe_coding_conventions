@@ -22,18 +22,15 @@ Resolve conflicts in this order:
 Before reading or assessing `SPEC.md`, run these exact commands:
 - Tests: <SET_EXACT_TEST_COMMAND>
 - Lint: <SET_EXACT_LINT_COMMAND>
-If either command placeholder is not replaced with an exact command, treat as blocking.
+If either command placeholder is not replaced with an exact command, record `NOT_RUN` and continue.
 </startup_preflight_gates>
 
 <preflight_deadlock_protocol>
 - Startup preflight max attempts: 2.
 - A preflight attempt means running startup `Tests` and `Lint` once each with no code changes.
 - You MUST NOT modify code or `SPEC.md` during startup preflight.
-- You MUST NOT read or assess `SPEC.md` until startup preflight passes.
-- If preflight still fails after max attempts, return:
-  - `Status: BLOCKED`
-  - `Blocking Reason: PRECHECK_STUCK`
-- On `PRECHECK_STUCK`, you MUST output a Preflight Failure Report with:
+- If preflight still fails after max attempts, continue to `Select Task` and mark preflight as failed.
+- On preflight failure, you MUST output a Preflight Failure Report with:
   - exact startup test and lint commands
   - failing tests (top 20) with first error line
   - lint failures (top 20) with first error line
@@ -55,8 +52,8 @@ If either command placeholder is not replaced with an exact command, treat as bl
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
 - On every run, you MUST execute Startup preflight before reading or assessing `SPEC.md`.
-- Startup preflight tests MUST pass and startup preflight lint MUST be clean before any `SPEC.md` work begins.
-- If startup preflight fails, you MUST follow `<preflight_deadlock_protocol>`.
+- Startup preflight results MUST be recorded in run output and `SPEC.md` Evidence.
+- Startup preflight failures MUST follow `<preflight_deadlock_protocol>` and MUST NOT block `SPEC.md` execution.
 - You MUST NOT proceed to another leaf while any required in-scope test or gate is failing for the current leaf.
 - If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
 - You MUST classify failing tests/gates as in-scope or out-of-scope.
@@ -104,7 +101,7 @@ For the current leaf task:
 - Attempt 2:
   - Rerun startup preflight `Tests` and `Lint`.
   - If both pass, continue to Select Task.
-  - If either fails, return `Status: BLOCKED` with `Blocking Reason: PRECHECK_STUCK`, include Preflight Failure Report, and stop.
+  - If either fails, include Preflight Failure Report and continue to Select Task.
 
 1) Select Task
 - Parse the Implementation Plan Checklist.
@@ -145,6 +142,7 @@ For the current leaf task:
 - Fill current leaf `Evidence` with:
   - Startup preflight tests:
   - Startup preflight lint:
+  - Preflight failure report (if preflight failed or NOT_RUN):
   - Commands run
   - Exit codes
   - Artifact/log paths
@@ -252,6 +250,7 @@ Guidelines:
     - Evidence (added by implementer):
       - Startup preflight tests:
       - Startup preflight lint:
+      - Preflight failure report (if preflight failed or NOT_RUN):
       - Commands run:
       - Exit codes:
       - Artifact/log paths:
