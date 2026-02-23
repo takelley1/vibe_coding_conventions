@@ -112,6 +112,7 @@ Use this structure:
       - Artifact/log paths:
       - Timestamp:
       - Test integrity notes:
+      - Out-of-scope failing tests:
   - [ ] R1.2: Task (leaf)
     ...
 - [ ] R2: Feature

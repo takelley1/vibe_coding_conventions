@@ -50,6 +50,7 @@ Each leaf task MUST include these exact fields:
   - `Artifact/log paths`
   - `Timestamp`
   - `Test integrity notes`
+  - `Out-of-scope failing tests`
 </spec_schema_contract>
 
 <review_protocol>
@@ -68,6 +69,7 @@ Each leaf task MUST include these exact fields:
   - Artifact/log paths
   - Timestamp
   - Test integrity notes
+  - Out-of-scope failing tests
 - Confirm changes stay within the leaf scope and traceability mapping.
 - Confirm tests were not gamed:
   - no deletion of existing tests unless explicitly required by `SPEC.md`
@@ -82,7 +84,8 @@ Each leaf task MUST include these exact fields:
 4) Quality gates
 - Run Global Quality Gates (`tests`, `lint`, `typecheck`, `formatting`) exactly as specified.
 - If any required gate cannot run, mark FAIL with blocker evidence.
-- If any required gate fails, mark FAIL.
+- If any required gate fails due to in-scope changes, mark FAIL.
+- If a required gate fails only due to documented out-of-scope/pre-existing failures, record it as a risk/nit and continue review.
 
 5) Design quality review
 - Assess correctness, edge cases, error handling, security, performance regressions.
@@ -131,12 +134,14 @@ For each top-level requirement (R1, R2, ...):
 
 <decision_rules>
 - FAIL if any checked requirement lacks required test coverage, gating evidence, or objective acceptance proof.
-- FAIL if any required gate cannot run or fails.
+- FAIL if any required gate cannot run.
+- FAIL if any required gate fails due to in-scope changes.
 - FAIL if evidence fields are missing for any checked leaf.
 - FAIL if flakiness is observed and not documented/tracked.
 - FAIL if test-gaming behavior is detected.
 - FAIL if a leaf was marked complete while in-scope tests or required gates were failing.
 - PASS WITH NITS if requirements are met but minor maintainability issues remain.
+- PASS WITH NITS if only documented out-of-scope/pre-existing test failures remain.
 - PASS only if all checked requirements and gates are cleanly satisfied with reproducible evidence.
 </decision_rules>
 

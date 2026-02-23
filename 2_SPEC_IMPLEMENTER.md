@@ -30,9 +30,11 @@ Resolve conflicts in this order:
 - You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
-- You MUST NOT proceed to another leaf while any required test or gate is failing for the current leaf.
+- You MUST NOT proceed to another leaf while any required in-scope test or gate is failing for the current leaf.
 - If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
-- You MAY return `BLOCKED` for failing tests only when the failure is unrelated/pre-existing and you document objective evidence in `SPEC.md`.
+- You MUST classify failing tests/gates as in-scope or out-of-scope.
+- You MUST document out-of-scope/pre-existing failing tests in `SPEC.md` Evidence and ignore them for leaf completion.
+- You MUST NOT return `BLOCKED` solely because of out-of-scope/pre-existing failing tests.
 - You MUST NOT delete tests unless explicitly required by `SPEC.md`.
 - You MUST NOT overwrite tests unless explicitly required by `SPEC.md`.
 - You MUST preserve existing test intent and rigor.
@@ -93,7 +95,7 @@ For the current leaf task:
 - Run `Global Quality Gates` exactly as written.
 - If any required gate command is missing/invalid/unrunnable, treat as blocking and stop.
 - If any required gate fails due to in-scope code, return to Fix Phase and continue until pass.
-- If any required gate fails due to unrelated/pre-existing issues, document objective evidence, leave task unchecked, and stop as `BLOCKED`.
+- If any required gate fails due to unrelated/pre-existing issues, document objective evidence and treat as out-of-scope.
 - Inspect test-file diffs for prohibited patterns before completion.
 - Confirm no test-gaming actions were used:
   - no deleted existing tests (unless explicitly required by `SPEC.md`)
@@ -101,7 +103,7 @@ For the current leaf task:
   - no assertion weakening in unrelated tests
 
 5) Update `SPEC.md`
-- Check the current leaf only when all required gates pass.
+- Check the current leaf only when all required in-scope gates pass.
 - If all children under a parent are checked, check the parent.
 - Fill current leaf `Evidence` with:
   - Commands run
@@ -109,6 +111,7 @@ For the current leaf task:
   - Artifact/log paths
   - Timestamp
   - Test integrity notes
+  - Out-of-scope failing tests (if any)
 
 6) Commit
 - Commit only after the leaf task is complete and verified.
@@ -128,6 +131,8 @@ Tests Added/Updated:
 Gates Run:
 - <command> => <pass/fail>
 Failing Tests:
+- <test_name or NONE>
+Out-of-Scope Failures:
 - <test_name or NONE>
 Evidence Logged: YES | NO
 Test Integrity: PRESERVED | MODIFIED_WITH_SPEC_JUSTIFICATION | VIOLATION
@@ -200,6 +205,7 @@ Guidelines:
       - Artifact/log paths:
       - Timestamp:
       - Test integrity notes:
+      - Out-of-scope failing tests:
   - [ ] R1.2: Task (leaf)
     ...
 - [ ] R2: Feature
