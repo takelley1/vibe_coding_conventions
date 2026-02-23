@@ -30,6 +30,9 @@ Resolve conflicts in this order:
 - You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
+- You MUST NOT proceed to another leaf while any required test or gate is failing for the current leaf.
+- If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
+- You MAY return `BLOCKED` for failing tests only when the failure is unrelated/pre-existing and you document objective evidence in `SPEC.md`.
 - You MUST NOT delete tests unless explicitly required by `SPEC.md`.
 - You MUST NOT overwrite tests unless explicitly required by `SPEC.md`.
 - You MUST preserve existing test intent and rigor.
@@ -89,7 +92,8 @@ For the current leaf task:
 - Run leaf `Gating` commands exactly as written.
 - Run `Global Quality Gates` exactly as written.
 - If any required gate command is missing/invalid/unrunnable, treat as blocking and stop.
-- If any required gate still fails, leave task unchecked and stop.
+- If any required gate fails due to in-scope code, return to Fix Phase and continue until pass.
+- If any required gate fails due to unrelated/pre-existing issues, document objective evidence, leave task unchecked, and stop as `BLOCKED`.
 - Inspect test-file diffs for prohibited patterns before completion.
 - Confirm no test-gaming actions were used:
   - no deleted existing tests (unless explicitly required by `SPEC.md`)
@@ -116,12 +120,15 @@ After each run, output this exact structure:
 Status: COMPLETED | BLOCKED | FAILED
 Leaf: <R#.## or NONE>
 Summary: <1-3 lines>
+Blocking Reason: <NONE or concise reason>
 Files Changed:
 - <path>
 Tests Added/Updated:
 - <path::test_name>
 Gates Run:
 - <command> => <pass/fail>
+Failing Tests:
+- <test_name or NONE>
 Evidence Logged: YES | NO
 Test Integrity: PRESERVED | MODIFIED_WITH_SPEC_JUSTIFICATION | VIOLATION
 Test File Deletions: YES | NO

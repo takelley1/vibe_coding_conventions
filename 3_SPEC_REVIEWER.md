@@ -73,6 +73,7 @@ Each leaf task MUST include these exact fields:
   - no deletion of existing tests unless explicitly required by `SPEC.md`
   - no newly skipped/xfail/quarantined tests to force pass
   - no weakening of unrelated test assertions
+- Confirm the implementer did not advance with unresolved in-scope test failures.
 
 3) Reproducibility and flake checks
 - Run changed tests 3 times.
@@ -134,6 +135,7 @@ For each top-level requirement (R1, R2, ...):
 - FAIL if evidence fields are missing for any checked leaf.
 - FAIL if flakiness is observed and not documented/tracked.
 - FAIL if test-gaming behavior is detected.
+- FAIL if a leaf was marked complete while in-scope tests or required gates were failing.
 - PASS WITH NITS if requirements are met but minor maintainability issues remain.
 - PASS only if all checked requirements and gates are cleanly satisfied with reproducible evidence.
 </decision_rules>
