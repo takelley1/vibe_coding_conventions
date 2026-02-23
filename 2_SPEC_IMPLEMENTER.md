@@ -16,6 +16,7 @@ Resolve conflicts in this order:
 - Current leaf task: the first unchecked leaf in `SPEC.md` from top to bottom.
 - Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
 - Startup preflight: full-repo tests and lint run before any `SPEC.md` assessment.
+- Scratchpad: `SCRATCHPAD.md`, used to track preflight attempts and avoid repeated loops.
 </definitions>
 
 <startup_preflight_gates>
@@ -29,6 +30,8 @@ If either command placeholder is not replaced with an exact command, record `NOT
 - Startup preflight max attempts: 2.
 - A preflight attempt means running startup `Tests` and `Lint` once each with no code changes.
 - You MUST NOT modify code or `SPEC.md` during startup preflight.
+- You MUST append each preflight attempt to `SCRATCHPAD.md`.
+- Before each new preflight attempt, you MUST review the latest `SCRATCHPAD.md` preflight notes to avoid repeating identical failed actions.
 - If preflight still fails after max attempts, continue to `Select Task` and mark preflight as failed.
 - On preflight failure, you MUST output a Preflight Failure Report with:
   - exact startup test and lint commands
@@ -36,6 +39,17 @@ If either command placeholder is not replaced with an exact command, record `NOT
   - lint failures (top 20) with first error line
   - whether failures changed between attempts
   - 1 to 3 concrete next actions
+
+Use this `SCRATCHPAD.md` template for each preflight attempt:
+- Timestamp:
+- Attempt number:
+- Test command:
+- Lint command:
+- Test result summary:
+- Lint result summary:
+- Delta vs prior attempt:
+- Notes on repeated-loop risk:
+- Next action candidates:
 </preflight_deadlock_protocol>
 
 <hard_rules>
@@ -96,10 +110,13 @@ For the current leaf task:
 0) Startup Preflight
 - Run startup preflight `Tests` and `Lint` commands from `<startup_preflight_gates>`.
 - Attempt 1:
+  - Record Attempt 1 in `SCRATCHPAD.md`.
   - If both pass, continue to Select Task.
   - If either fails, continue to Attempt 2 without changing code.
 - Attempt 2:
+  - Review `SCRATCHPAD.md` Attempt 1 notes before rerunning commands.
   - Rerun startup preflight `Tests` and `Lint`.
+  - Record Attempt 2 in `SCRATCHPAD.md` including delta vs Attempt 1.
   - If both pass, continue to Select Task.
   - If either fails, include Preflight Failure Report and continue to Select Task.
 
@@ -165,6 +182,7 @@ Preflight Tests: PASS | FAIL | NOT_RUN
 Preflight Lint: PASS | FAIL | NOT_RUN
 Preflight Attempts: <0|1|2>
 Preflight Failure Delta: UNCHANGED | CHANGED | NOT_APPLICABLE
+Scratchpad Updated: YES | NO
 Files Changed:
 - <path>
 Tests Added/Updated:
