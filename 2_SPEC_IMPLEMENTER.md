@@ -39,7 +39,7 @@ If either command placeholder is not replaced with an exact command, record `NOT
 </startup_preflight_gates>
 
 <preflight_deadlock_protocol>
-- Startup preflight max attempts: 2.
+- Startup preflight max attempts: 10.
 - A preflight attempt means running startup `Tests` and `Lint` once each with no code changes.
 - You MUST NOT modify code or `SPEC.md` during startup preflight.
 - You MUST append each preflight attempt to `SCRATCHPAD.md`.
