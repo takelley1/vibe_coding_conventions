@@ -31,6 +31,12 @@ Resolve conflicts in this order:
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
 - You MUST NOT delete tests unless explicitly required by `SPEC.md`.
+- You MUST NOT overwrite tests unless explicitly required by `SPEC.md`.
+- You MUST preserve existing test intent and rigor.
+- You MUST NOT weaken tests to make gates pass.
+- You MUST NOT disable tests with skip/xfail/quarantine/comment-out patterns unless explicitly required by `SPEC.md`.
+- You MUST NOT modify unrelated test files.
+- You MUST treat unrelated pre-existing test failures as out-of-scope and MUST NOT "fix" them by weakening or deleting tests.
 - You SHOULD keep changes small and reversible.
 - You SHOULD choose the smallest safe change with strongest testability.
 - If ambiguity or broken code is blocking, you MUST document questions/options/impact in `SPEC.md` and stop.
@@ -70,6 +76,7 @@ For the current leaf task:
 
 2) Test Phase (TDD)
 - Add or update tests for the leaf requirement.
+- Limit test edits to tests directly tied to the current leaf requirement.
 - Run target tests and confirm they fail before implementation.
 
 3) Fix Phase
@@ -83,6 +90,11 @@ For the current leaf task:
 - Run `Global Quality Gates` exactly as written.
 - If any required gate command is missing/invalid/unrunnable, treat as blocking and stop.
 - If any required gate still fails, leave task unchecked and stop.
+- Inspect test-file diffs for prohibited patterns before completion.
+- Confirm no test-gaming actions were used:
+  - no deleted existing tests (unless explicitly required by `SPEC.md`)
+  - no newly skipped/xfail/quarantined tests to force pass
+  - no assertion weakening in unrelated tests
 
 5) Update `SPEC.md`
 - Check the current leaf only when all required gates pass.
@@ -92,6 +104,7 @@ For the current leaf task:
   - Exit codes
   - Artifact/log paths
   - Timestamp
+  - Test integrity notes
 
 6) Commit
 - Commit only after the leaf task is complete and verified.
@@ -110,6 +123,9 @@ Tests Added/Updated:
 Gates Run:
 - <command> => <pass/fail>
 Evidence Logged: YES | NO
+Test Integrity: PRESERVED | MODIFIED_WITH_SPEC_JUSTIFICATION | VIOLATION
+Test File Deletions: YES | NO
+New Skip/XFail: YES | NO
 Commit: <hash or NONE>
 Next Action: <single next step>
 </run_output_contract>
@@ -176,6 +192,7 @@ Guidelines:
       - Exit codes:
       - Artifact/log paths:
       - Timestamp:
+      - Test integrity notes:
   - [ ] R1.2: Task (leaf)
     ...
 - [ ] R2: Feature

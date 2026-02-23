@@ -111,6 +111,7 @@ Use this structure:
       - Exit codes:
       - Artifact/log paths:
       - Timestamp:
+      - Test integrity notes:
   - [ ] R1.2: Task (leaf)
     ...
 - [ ] R2: Feature

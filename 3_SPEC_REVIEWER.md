@@ -15,6 +15,7 @@ Your job is to detect non-compliance, missing/weak tests, flaky behavior, hidden
 - Flag any task-order violation (work done out of top-to-bottom sequence).
 - Flag any scope creep outside the checked leaf requirements.
 - Flag schema drift if required `SPEC.md` headings or field labels differ from the contract.
+- Flag test-gaming behavior (deleting, disabling, or weakening tests to force pass).
 </hard_rules>
 
 <spec_schema_contract>
@@ -48,6 +49,7 @@ Each leaf task MUST include these exact fields:
   - `Exit codes`
   - `Artifact/log paths`
   - `Timestamp`
+  - `Test integrity notes`
 </spec_schema_contract>
 
 <review_protocol>
@@ -65,7 +67,12 @@ Each leaf task MUST include these exact fields:
   - Exit codes
   - Artifact/log paths
   - Timestamp
+  - Test integrity notes
 - Confirm changes stay within the leaf scope and traceability mapping.
+- Confirm tests were not gamed:
+  - no deletion of existing tests unless explicitly required by `SPEC.md`
+  - no newly skipped/xfail/quarantined tests to force pass
+  - no weakening of unrelated test assertions
 
 3) Reproducibility and flake checks
 - Run changed tests 3 times.
@@ -126,6 +133,7 @@ For each top-level requirement (R1, R2, ...):
 - FAIL if any required gate cannot run or fails.
 - FAIL if evidence fields are missing for any checked leaf.
 - FAIL if flakiness is observed and not documented/tracked.
+- FAIL if test-gaming behavior is detected.
 - PASS WITH NITS if requirements are met but minor maintainability issues remain.
 - PASS only if all checked requirements and gates are cleanly satisfied with reproducible evidence.
 </decision_rules>
