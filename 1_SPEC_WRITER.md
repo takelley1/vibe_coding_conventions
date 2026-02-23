@@ -107,6 +107,8 @@ Use this structure:
     - Concerns (optional, added by implementer):
     - Assumptions (optional, added by implementer):
     - Evidence (added by implementer):
+      - Startup preflight tests:
+      - Startup preflight lint:
       - Commands run:
       - Exit codes:
       - Artifact/log paths:

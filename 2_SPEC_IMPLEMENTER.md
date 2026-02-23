@@ -15,7 +15,15 @@ Resolve conflicts in this order:
 - Blocking issue: cannot proceed without requirement change or missing information.
 - Current leaf task: the first unchecked leaf in `SPEC.md` from top to bottom.
 - Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
+- Startup preflight: full-repo tests and lint run before any `SPEC.md` assessment.
 </definitions>
+
+<startup_preflight_gates>
+Before reading or assessing `SPEC.md`, run these exact commands:
+- Tests: <SET_EXACT_TEST_COMMAND>
+- Lint: <SET_EXACT_LINT_COMMAND>
+If either command placeholder is not replaced with an exact command, treat as blocking.
+</startup_preflight_gates>
 
 <hard_rules>
 - You MUST treat `SPEC.md` as the source of truth.
@@ -30,6 +38,9 @@ Resolve conflicts in this order:
 - You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
+- On every run, you MUST execute Startup preflight before reading or assessing `SPEC.md`.
+- Startup preflight tests MUST pass and startup preflight lint MUST be clean before any `SPEC.md` work begins.
+- If startup preflight fails, you MUST return `BLOCKED`, MUST NOT assess `SPEC.md`, and MUST NOT modify code or `SPEC.md`.
 - You MUST NOT proceed to another leaf while any required in-scope test or gate is failing for the current leaf.
 - If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
 - You MUST classify failing tests/gates as in-scope or out-of-scope.
@@ -69,28 +80,33 @@ Resolve conflicts in this order:
 <execution_protocol>
 For the current leaf task:
 
-0) Select Task
+0) Startup Preflight
+- Run startup preflight `Tests` and `Lint` commands from `<startup_preflight_gates>`.
+- If either preflight command fails, return `Status: BLOCKED` and stop.
+- Do not read or assess `SPEC.md` unless both preflight checks pass.
+
+1) Select Task
 - Parse the Implementation Plan Checklist.
 - Identify the first unchecked leaf task (`- [ ] R#.##: ...`) that includes `Tests`, `Acceptance Criteria`, and `Gating`.
 - If no unchecked leaf tasks remain, output `Status: COMPLETED` with `Leaf: NONE` and stop.
 
-1) Plan
+2) Plan
 - Identify current leaf task ID.
 - Read `Research`, `Acceptance Criteria`, `Tests`, and `Gating` for that leaf.
 - Identify files to edit and tests to add/update.
 
-2) Test Phase (TDD)
+3) Test Phase (TDD)
 - Add or update tests for the leaf requirement.
 - Limit test edits to tests directly tied to the current leaf requirement.
 - Run target tests and confirm they fail before implementation.
 
-3) Fix Phase
+4) Fix Phase
 - Implement minimum code to satisfy the leaf requirement.
 - Run target tests and confirm they pass.
 - Rerun changed tests 3 times for flake check.
 - If any rerun differs, document flakiness and leave task unchecked.
 
-4) Verify
+5) Verify
 - Run leaf `Gating` commands exactly as written.
 - Run `Global Quality Gates` exactly as written.
 - If any required gate command is missing/invalid/unrunnable, treat as blocking and stop.
@@ -102,10 +118,12 @@ For the current leaf task:
   - no newly skipped/xfail/quarantined tests to force pass
   - no assertion weakening in unrelated tests
 
-5) Update `SPEC.md`
+6) Update `SPEC.md`
 - Check the current leaf only when all required in-scope gates pass.
 - If all children under a parent are checked, check the parent.
 - Fill current leaf `Evidence` with:
+  - Startup preflight tests:
+  - Startup preflight lint:
   - Commands run
   - Exit codes
   - Artifact/log paths
@@ -113,7 +131,7 @@ For the current leaf task:
   - Test integrity notes
   - Out-of-scope failing tests (if any)
 
-6) Commit
+7) Commit
 - Commit only after the leaf task is complete and verified.
 </execution_protocol>
 
@@ -124,6 +142,8 @@ Status: COMPLETED | BLOCKED | FAILED
 Leaf: <R#.## or NONE>
 Summary: <1-3 lines>
 Blocking Reason: <NONE or concise reason>
+Preflight Tests: PASS | FAIL | NOT_RUN
+Preflight Lint: PASS | FAIL | NOT_RUN
 Files Changed:
 - <path>
 Tests Added/Updated:
@@ -200,6 +220,8 @@ Guidelines:
     - Concerns (optional, added by implementer):
     - Assumptions (optional, added by implementer):
     - Evidence (added by implementer):
+      - Startup preflight tests:
+      - Startup preflight lint:
       - Commands run:
       - Exit codes:
       - Artifact/log paths:

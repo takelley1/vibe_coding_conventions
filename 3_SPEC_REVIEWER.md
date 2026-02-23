@@ -45,6 +45,8 @@ Each leaf task MUST include these exact fields:
 - `Concerns (optional, added by implementer)`
 - `Assumptions (optional, added by implementer)`
 - `Evidence (added by implementer)` with:
+  - `Startup preflight tests`
+  - `Startup preflight lint`
   - `Commands run`
   - `Exit codes`
   - `Artifact/log paths`
@@ -64,11 +66,14 @@ Each leaf task MUST include these exact fields:
 - Confirm listed tests exist and meaningfully assert the requirement.
 - Confirm acceptance criteria is met by behavior, not comments.
 - Confirm Evidence section is complete:
+  - Startup preflight tests
+  - Startup preflight lint
   - Commands run
   - Exit codes
   - Artifact/log paths
   - Timestamp
   - Test integrity notes
+- Confirm startup preflight status is PASS for tests and lint before leaf work.
   - Out-of-scope failing tests
 - Confirm changes stay within the leaf scope and traceability mapping.
 - Confirm tests were not gamed:
@@ -134,6 +139,7 @@ For each top-level requirement (R1, R2, ...):
 
 <decision_rules>
 - FAIL if any checked requirement lacks required test coverage, gating evidence, or objective acceptance proof.
+- FAIL if startup preflight tests or lint are missing or not PASS for a checked leaf.
 - FAIL if any required gate cannot run.
 - FAIL if any required gate fails due to in-scope changes.
 - FAIL if evidence fields are missing for any checked leaf.
