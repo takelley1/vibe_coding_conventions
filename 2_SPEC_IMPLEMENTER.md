@@ -33,8 +33,8 @@ Resolve conflicts in this order:
 
 <startup_preflight_gates>
 Before reading or assessing `SPEC.md`, run these exact commands:
-- Tests: <SET_EXACT_TEST_COMMAND>
-- Lint: <SET_EXACT_LINT_COMMAND>
+- Tests: bash scripts/test-full.sh
+- Lint: bash scripts/lint.sh
 If either command placeholder is not replaced with an exact command, record `NOT_RUN` and continue.
 </startup_preflight_gates>
 
