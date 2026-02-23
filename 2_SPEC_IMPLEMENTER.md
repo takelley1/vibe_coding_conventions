@@ -15,12 +15,10 @@ Resolve conflicts in this order:
 - Blocking issue: cannot proceed without requirement change or missing information.
 - Current leaf task: the first unchecked leaf in `SPEC.md` from top to bottom.
 - Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
-- Startup preflight: full-repo tests and lint run before any `SPEC.md` assessment.
-- Scratchpad: `SCRATCHPAD.md`, used to track preflight attempts and avoid repeated loops.
 </definitions>
 
 <scratchpad_reasoning_policy>
-- You MUST think hard before each major action (preflight retries, fix attempts, and gate retries).
+- You MUST think hard before each major action (fix attempts and gate retries).
 - You MUST record detailed working notes in `SCRATCHPAD.md` throughout the run.
 - Working notes MUST include:
   - current hypothesis
@@ -31,55 +29,6 @@ Resolve conflicts in this order:
 - Do not write private hidden reasoning references; write actionable engineering notes.
 </scratchpad_reasoning_policy>
 
-<startup_preflight_gates>
-Before reading or assessing `SPEC.md`, run these exact commands:
-- Tests: bash scripts/test-full.sh
-- Lint: bash scripts/lint.sh
-If either command placeholder is not replaced with an exact command, record `NOT_RUN` and continue.
-</startup_preflight_gates>
-
-<preflight_deadlock_protocol>
-- Startup preflight max attempts: 10.
-- A preflight attempt means running startup `Tests` and `Lint` once each.
-- You MAY modify code between preflight attempts only to improve startup test/lint outcomes.
-- You MUST NOT modify `SPEC.md` during startup preflight.
-- You MUST append each preflight attempt to `SCRATCHPAD.md`.
-- Before each new preflight attempt, you MUST review the latest `SCRATCHPAD.md` preflight notes to avoid repeating identical failed actions.
-- You MUST classify each attempt outcome as:
-  - `IMPROVED`: measurable progress occurred.
-  - `UNCHANGED`: no measurable progress.
-  - `REGRESSED`: results worsened.
-- Measurable progress means at least one of:
-  - fewer failing tests than the best prior attempt,
-  - fewer lint violations than the best prior attempt,
-  - startup Tests or startup Lint moved from FAIL to PASS.
-- Every time measurable progress occurs during preflight, you MUST commit immediately before the next attempt.
-- Preflight progress commits MUST use commit format:
-  - `<PREFIX> tests: <concise measurable progress summary>`
-  - `<PREFIX> linting: <concise measurable progress summary>`
-- If preflight still fails after max attempts, continue to `Select Task` and mark preflight as failed.
-- On preflight failure, you MUST output a Preflight Failure Report with:
-  - exact startup test and lint commands
-  - failing tests (top 20) with first error line
-  - lint failures (top 20) with first error line
-  - whether failures changed between attempts
-  - 1 to 3 concrete next actions
-
-Use this `SCRATCHPAD.md` template for each preflight attempt:
-- Timestamp:
-- Attempt number:
-- Test command:
-- Lint command:
-- Test result summary:
-- Lint result summary:
-- Progress classification (IMPROVED/UNCHANGED/REGRESSED):
-- Measurable progress summary (or NONE):
-- Delta vs prior attempt:
-- Notes on repeated-loop risk:
-- Hypothesis and rationale:
-- Next action candidates:
-</preflight_deadlock_protocol>
-
 <hard_rules>
 - You MUST treat `SPEC.md` as the source of truth.
 - You MUST NOT invent requirements.
@@ -87,15 +36,12 @@ Use this `SCRATCHPAD.md` template for each preflight attempt:
 - You MUST execute exactly one leaf task per run.
 - You MUST NOT start another leaf task in the same run.
 - You MUST select work using this rule:
-  - Scan checklist items top-to-bottom.
-  - Ignore parent items (for example `R1`, `R2`) when selecting work.
-  - Choose the first unchecked leaf task only.
+  - scan checklist items top-to-bottom.
+  - ignore parent items (for example `R1`, `R2`) when selecting work.
+  - choose the first unchecked leaf task only.
 - You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
-- On every run, you MUST execute Startup preflight before reading or assessing `SPEC.md`.
-- Startup preflight results MUST be recorded in run output and `SPEC.md` Evidence.
-- Startup preflight failures MUST follow `<preflight_deadlock_protocol>` and MUST NOT block `SPEC.md` execution.
 - You MUST NOT proceed to another leaf while any required in-scope test or gate is failing for the current leaf.
 - If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
 - You MUST classify failing tests/gates as in-scope or out-of-scope.
@@ -134,16 +80,6 @@ Use this `SCRATCHPAD.md` template for each preflight attempt:
 
 <execution_protocol>
 For the current leaf task:
-
-0) Startup Preflight
-- Run startup preflight `Tests` and `Lint` commands from `<startup_preflight_gates>`.
-- Repeat attempts up to `Startup preflight max attempts`:
-  - Run startup preflight `Tests` and `Lint`.
-  - Record attempt details and progress classification in `SCRATCHPAD.md`.
-  - If measurable progress occurred, commit immediately with `preflight: <progress summary>`.
-  - If both preflight checks pass, continue to Select Task.
-  - Review latest `SCRATCHPAD.md` notes before the next attempt.
-- If preflight remains failing at max attempts, include Preflight Failure Report and continue to Select Task.
 
 1) Select Task
 - Parse the Implementation Plan Checklist.
@@ -185,9 +121,6 @@ For the current leaf task:
 - Check the current leaf only when all required in-scope gates pass.
 - If all children under a parent are checked, check the parent.
 - Fill current leaf `Evidence` with:
-  - Startup preflight tests:
-  - Startup preflight lint:
-  - Preflight failure report (if preflight failed or NOT_RUN):
   - Commands run
   - Exit codes
   - Artifact/log paths
@@ -206,13 +139,8 @@ Status: COMPLETED | BLOCKED | FAILED
 Leaf: <R#.## or NONE>
 Summary: <1-3 lines>
 Blocking Reason: <NONE or concise reason>
-Preflight Tests: PASS | FAIL | NOT_RUN
-Preflight Lint: PASS | FAIL | NOT_RUN
-Preflight Attempts: <0|1..10>
-Preflight Failure Delta: UNCHANGED | CHANGED | NOT_APPLICABLE
 Scratchpad Updated: YES | NO
 Scratchpad Reasoning Logged: YES | NO
-Preflight Progress Commits: <number>
 Files Changed:
 - <path>
 Tests Added/Updated:
@@ -227,13 +155,6 @@ Evidence Logged: YES | NO
 Test Integrity: PRESERVED | MODIFIED_WITH_SPEC_JUSTIFICATION | VIOLATION
 Test File Deletions: YES | NO
 New Skip/XFail: YES | NO
-Preflight Failure Report:
-- Test command: <command>
-- Lint command: <command>
-- Failing tests (top 20, first error line):
-  - <test: first error line>
-- Lint failures (top 20, first error line):
-  - <lint item: first error line>
 Commit: <hash or NONE>
 Next Action: <single next step>
 </run_output_contract>
@@ -296,9 +217,6 @@ Guidelines:
     - Concerns (optional, added by implementer):
     - Assumptions (optional, added by implementer):
     - Evidence (added by implementer):
-      - Startup preflight tests:
-      - Startup preflight lint:
-      - Preflight failure report (if preflight failed or NOT_RUN):
       - Commands run:
       - Exit codes:
       - Artifact/log paths:
