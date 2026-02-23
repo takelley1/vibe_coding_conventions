@@ -14,6 +14,7 @@ Resolve conflicts in this order:
 - MAY: optional.
 - Blocking issue: cannot proceed without requirement change or missing information.
 - Current leaf task: the first unchecked leaf in `SPEC.md` from top to bottom.
+- Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
 </definitions>
 
 <hard_rules>
@@ -22,6 +23,12 @@ Resolve conflicts in this order:
 - You MUST work top-to-bottom and MUST NOT skip ahead.
 - You MUST execute exactly one leaf task per run.
 - You MUST NOT start another leaf task in the same run.
+- You MUST select work using this rule:
+  - Scan checklist items top-to-bottom.
+  - Ignore parent items (for example `R1`, `R2`) when selecting work.
+  - Choose the first unchecked leaf task only.
+- You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
+- You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
 - You MUST perform tests first, then implementation, then gates.
 - You MUST NOT delete tests unless explicitly required by `SPEC.md`.
 - You SHOULD keep changes small and reversible.
@@ -50,6 +57,11 @@ Resolve conflicts in this order:
 
 <execution_protocol>
 For the current leaf task:
+
+0) Select Task
+- Parse the Implementation Plan Checklist.
+- Identify the first unchecked leaf task (`- [ ] R#.##: ...`) that includes `Tests`, `Acceptance Criteria`, and `Gating`.
+- If no unchecked leaf tasks remain, output `Status: COMPLETED` with `Leaf: NONE` and stop.
 
 1) Plan
 - Identify current leaf task ID.
@@ -89,7 +101,7 @@ For the current leaf task:
 After each run, output this exact structure:
 
 Status: COMPLETED | BLOCKED | FAILED
-Leaf: <R#.##>
+Leaf: <R#.## or NONE>
 Summary: <1-3 lines>
 Files Changed:
 - <path>
