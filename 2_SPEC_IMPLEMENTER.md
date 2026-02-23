@@ -19,6 +19,18 @@ Resolve conflicts in this order:
 - Scratchpad: `SCRATCHPAD.md`, used to track preflight attempts and avoid repeated loops.
 </definitions>
 
+<scratchpad_reasoning_policy>
+- You MUST think hard before each major action (preflight retries, fix attempts, and gate retries).
+- You MUST record detailed working notes in `SCRATCHPAD.md` throughout the run.
+- Working notes MUST include:
+  - current hypothesis
+  - evidence observed
+  - why the previous attempt failed (if applicable)
+  - options considered
+  - chosen next action and rationale
+- Do not write private hidden reasoning references; write actionable engineering notes.
+</scratchpad_reasoning_policy>
+
 <startup_preflight_gates>
 Before reading or assessing `SPEC.md`, run these exact commands:
 - Tests: <SET_EXACT_TEST_COMMAND>
@@ -49,6 +61,7 @@ Use this `SCRATCHPAD.md` template for each preflight attempt:
 - Lint result summary:
 - Delta vs prior attempt:
 - Notes on repeated-loop risk:
+- Hypothesis and rationale:
 - Next action candidates:
 </preflight_deadlock_protocol>
 
@@ -129,6 +142,7 @@ For the current leaf task:
 - Identify current leaf task ID.
 - Read `Research`, `Acceptance Criteria`, `Tests`, and `Gating` for that leaf.
 - Identify files to edit and tests to add/update.
+- Record plan rationale in `SCRATCHPAD.md`.
 
 3) Test Phase (TDD)
 - Add or update tests for the leaf requirement.
@@ -140,6 +154,7 @@ For the current leaf task:
 - Run target tests and confirm they pass.
 - Rerun changed tests 3 times for flake check.
 - If any rerun differs, document flakiness and leave task unchecked.
+- Record each fix attempt and hypothesis outcome in `SCRATCHPAD.md`.
 
 5) Verify
 - Run leaf `Gating` commands exactly as written.
@@ -152,6 +167,7 @@ For the current leaf task:
   - no deleted existing tests (unless explicitly required by `SPEC.md`)
   - no newly skipped/xfail/quarantined tests to force pass
   - no assertion weakening in unrelated tests
+- Record verification outcomes and next-step rationale in `SCRATCHPAD.md`.
 
 6) Update `SPEC.md`
 - Check the current leaf only when all required in-scope gates pass.
@@ -183,6 +199,7 @@ Preflight Lint: PASS | FAIL | NOT_RUN
 Preflight Attempts: <0|1|2>
 Preflight Failure Delta: UNCHANGED | CHANGED | NOT_APPLICABLE
 Scratchpad Updated: YES | NO
+Scratchpad Reasoning Logged: YES | NO
 Files Changed:
 - <path>
 Tests Added/Updated:
