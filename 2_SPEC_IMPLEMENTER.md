@@ -40,10 +40,22 @@ If either command placeholder is not replaced with an exact command, record `NOT
 
 <preflight_deadlock_protocol>
 - Startup preflight max attempts: 10.
-- A preflight attempt means running startup `Tests` and `Lint` once each with no code changes.
-- You MUST NOT modify code or `SPEC.md` during startup preflight.
+- A preflight attempt means running startup `Tests` and `Lint` once each.
+- You MAY modify code between preflight attempts only to improve startup test/lint outcomes.
+- You MUST NOT modify `SPEC.md` during startup preflight.
 - You MUST append each preflight attempt to `SCRATCHPAD.md`.
 - Before each new preflight attempt, you MUST review the latest `SCRATCHPAD.md` preflight notes to avoid repeating identical failed actions.
+- You MUST classify each attempt outcome as:
+  - `IMPROVED`: measurable progress occurred.
+  - `UNCHANGED`: no measurable progress.
+  - `REGRESSED`: results worsened.
+- Measurable progress means at least one of:
+  - fewer failing tests than the best prior attempt,
+  - fewer lint violations than the best prior attempt,
+  - startup Tests or startup Lint moved from FAIL to PASS.
+- Every time measurable progress occurs during preflight, you MUST commit immediately before the next attempt.
+- Preflight progress commits MUST use commit format:
+  - `preflight: <concise measurable progress summary>`
 - If preflight still fails after max attempts, continue to `Select Task` and mark preflight as failed.
 - On preflight failure, you MUST output a Preflight Failure Report with:
   - exact startup test and lint commands
@@ -59,6 +71,8 @@ Use this `SCRATCHPAD.md` template for each preflight attempt:
 - Lint command:
 - Test result summary:
 - Lint result summary:
+- Progress classification (IMPROVED/UNCHANGED/REGRESSED):
+- Measurable progress summary (or NONE):
 - Delta vs prior attempt:
 - Notes on repeated-loop risk:
 - Hypothesis and rationale:
@@ -122,16 +136,13 @@ For the current leaf task:
 
 0) Startup Preflight
 - Run startup preflight `Tests` and `Lint` commands from `<startup_preflight_gates>`.
-- Attempt 1:
-  - Record Attempt 1 in `SCRATCHPAD.md`.
-  - If both pass, continue to Select Task.
-  - If either fails, continue to Attempt 2 without changing code.
-- Attempt 2:
-  - Review `SCRATCHPAD.md` Attempt 1 notes before rerunning commands.
-  - Rerun startup preflight `Tests` and `Lint`.
-  - Record Attempt 2 in `SCRATCHPAD.md` including delta vs Attempt 1.
-  - If both pass, continue to Select Task.
-  - If either fails, include Preflight Failure Report and continue to Select Task.
+- Repeat attempts up to `Startup preflight max attempts`:
+  - Run startup preflight `Tests` and `Lint`.
+  - Record attempt details and progress classification in `SCRATCHPAD.md`.
+  - If measurable progress occurred, commit immediately with `preflight: <progress summary>`.
+  - If both preflight checks pass, continue to Select Task.
+  - Review latest `SCRATCHPAD.md` notes before the next attempt.
+- If preflight remains failing at max attempts, include Preflight Failure Report and continue to Select Task.
 
 1) Select Task
 - Parse the Implementation Plan Checklist.
@@ -196,10 +207,11 @@ Summary: <1-3 lines>
 Blocking Reason: <NONE or concise reason>
 Preflight Tests: PASS | FAIL | NOT_RUN
 Preflight Lint: PASS | FAIL | NOT_RUN
-Preflight Attempts: <0|1|2>
+Preflight Attempts: <0|1..10>
 Preflight Failure Delta: UNCHANGED | CHANGED | NOT_APPLICABLE
 Scratchpad Updated: YES | NO
 Scratchpad Reasoning Logged: YES | NO
+Preflight Progress Commits: <number>
 Files Changed:
 - <path>
 Tests Added/Updated:
