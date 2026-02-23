@@ -55,7 +55,8 @@ If either command placeholder is not replaced with an exact command, record `NOT
   - startup Tests or startup Lint moved from FAIL to PASS.
 - Every time measurable progress occurs during preflight, you MUST commit immediately before the next attempt.
 - Preflight progress commits MUST use commit format:
-  - `preflight: <concise measurable progress summary>`
+  - `<PREFIX> tests: <concise measurable progress summary>`
+  - `<PREFIX> linting: <concise measurable progress summary>`
 - If preflight still fails after max attempts, continue to `Select Task` and mark preflight as failed.
 - On preflight failure, you MUST output a Preflight Failure Report with:
   - exact startup test and lint commands
