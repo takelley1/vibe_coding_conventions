@@ -47,8 +47,9 @@ Resolve conflicts in this order:
 - You MUST classify failing tests/gates as in-scope or out-of-scope.
 - You MUST document out-of-scope/pre-existing failing tests in `SPEC.md` Evidence and ignore them for leaf completion.
 - You MUST NOT return `BLOCKED` solely because of out-of-scope/pre-existing failing tests.
-- You MUST NOT delete tests unless explicitly required by `SPEC.md`.
-- You MUST NOT overwrite tests unless explicitly required by `SPEC.md`.
+- You SHOULD NOT delete tests.
+- You SHOULD NOT overwrite tests.
+- If there's an obvious bug in a test, you MAY modify the test.
 - You MUST preserve existing test intent and rigor.
 - You MUST NOT weaken tests to make gates pass.
 - You MUST NOT disable tests with skip/xfail/quarantine/comment-out patterns unless explicitly required by `SPEC.md`.
