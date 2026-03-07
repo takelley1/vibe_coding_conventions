@@ -17,31 +17,19 @@ Resolve conflicts in this order:
 - Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
 </definitions>
 
-<scratchpad_reasoning_policy>
-- You MUST think hard before each major action (fix attempts and gate retries).
-- You MUST record detailed working notes in `SCRATCHPAD.md` throughout the run.
-- Working notes MUST include:
-  - current hypothesis
-  - evidence observed
-  - why the previous attempt failed (if applicable)
-  - options considered
-  - chosen next action and rationale
-- Do not write private hidden reasoning references; write actionable engineering notes.
-</scratchpad_reasoning_policy>
 
 <hard_rules>
+- You MUST think hard before each major action (fix attempts and gate retries).
 - You MUST treat `SPEC.md` as the source of truth.
 - You MUST NOT invent requirements.
 - You MUST work top-to-bottom and MUST NOT skip ahead.
-- You MUST execute exactly one leaf task per run.
-- You MUST NOT start another leaf task in the same run.
 - You MUST select work using this rule:
   - scan checklist items top-to-bottom.
   - ignore parent items (for example `R1`, `R2`) when selecting work.
   - choose the first unchecked leaf task only.
 - You MUST recompute the current leaf after reading `SPEC.md`; you MUST NOT stop because earlier tasks are already checked.
 - You MUST NOT return control with only advice/suggestions while any unchecked leaf task exists.
-- You MUST perform tests first, then implementation, then gates.
+- You MUST write failing tests first, then implementation, then gates.
 - You MUST NOT proceed to another leaf while any required in-scope test or gate is failing for the current leaf.
 - If required tests fail and the failure is in scope for the current leaf, you MUST keep fixing in the same run until tests pass or a true blocker is reached.
 - You MUST classify failing tests/gates as in-scope or out-of-scope.
@@ -55,29 +43,17 @@ Resolve conflicts in this order:
 - You MUST NOT disable tests with skip/xfail/quarantine/comment-out patterns unless explicitly required by `SPEC.md`.
 - You MUST NOT modify unrelated test files.
 - You MUST treat unrelated pre-existing test failures as out-of-scope and MUST NOT "fix" them by weakening or deleting tests.
+- You MUST not write placeholder code or trivial code to get tests to pass. All code must be production-ready.
+- You MUST not write placeholder test code that is trivial to pass.
 - You SHOULD keep changes small and reversible.
-- You SHOULD choose the smallest safe change with strongest testability.
-- If ambiguity or broken code is blocking, you MUST document questions/options/impact in `SPEC.md` and stop.
+- If ambiguity or broken code is blocking, you MUST document questions/options/impact in `SPEC.md` and make your best guess before continuing.
 - If ambiguity is non-blocking, you MUST document assumption/options/rationale in `SPEC.md` before continuing.
-- You SHOULD target <=40 logical lines for newly added or materially modified functions.
-- If a function exceeds 40 logical lines, you MUST justify it in `SPEC.md` under `Concerns`.
-- You MUST NOT use `pragma: no cover`.
+- You MUST NOT use `pragma: no cover` to skip tests.
 - Missing required Evidence means the task is incomplete.
 - You MUST NOT modify `SPEC.md` outside the current leaf, except:
   - checking parent boxes when all child leaf tasks are complete.
   - adding notes in current leaf `Concerns` / `Assumptions` / `Evidence`.
 </hard_rules>
-
-<policy_excerpt>
-- Never alter the core tech stack without explicit approval.
-- Keep code simple, readable, and non-duplicative (DRY, YAGNI).
-- Use meaningful names.
-- Handle errors robustly; avoid overly broad exception catches.
-- For Python, follow PEP8/Pylint/Flake8/pydocstyle and Google-style docstrings.
-- For shell, use `/usr/bin/env bash`, `set -euo pipefail`, `[[ ]]`, `$(...)`, `"${VAR}"`, and shellcheck-safe patterns.
-- Include negative and edge-case tests where relevant.
-- Use commit format `area: short summary` with subject <=72 chars.
-</policy_excerpt>
 
 <execution_protocol>
 For the current leaf task:
@@ -91,7 +67,6 @@ For the current leaf task:
 - Identify current leaf task ID.
 - Read `Research`, `Acceptance Criteria`, `Tests`, and `Gating` for that leaf.
 - Identify files to edit and tests to add/update.
-- Record plan rationale in `SCRATCHPAD.md`.
 
 3) Test Phase (TDD)
 - Add or update tests for the leaf requirement.
@@ -99,24 +74,16 @@ For the current leaf task:
 - Run target tests and confirm they fail before implementation.
 
 4) Fix Phase
-- Implement minimum code to satisfy the leaf requirement.
+- Implement code to satisfy the leaf requirement.
 - Run target tests and confirm they pass.
-- Rerun changed tests 3 times for flake check.
-- If any rerun differs, document flakiness and leave task unchecked.
-- Record each fix attempt and hypothesis outcome in `SCRATCHPAD.md`.
 
 5) Verify
 - Run leaf `Gating` commands exactly as written.
 - Run `Global Quality Gates` exactly as written.
-- If any required gate command is missing/invalid/unrunnable, treat as blocking and stop.
-- If any required gate fails due to in-scope code, return to Fix Phase and continue until pass.
-- If any required gate fails due to unrelated/pre-existing issues, document objective evidence and treat as out-of-scope.
-- Inspect test-file diffs for prohibited patterns before completion.
 - Confirm no test-gaming actions were used:
   - no deleted existing tests (unless explicitly required by `SPEC.md`)
   - no newly skipped/xfail/quarantined tests to force pass
   - no assertion weakening in unrelated tests
-- Record verification outcomes and next-step rationale in `SCRATCHPAD.md`.
 
 6) Update `SPEC.md`
 - Check the current leaf only when all required in-scope gates pass.
@@ -136,28 +103,34 @@ For the current leaf task:
 <run_output_contract>
 After each run, output this exact structure:
 
+<structure>
 Status: COMPLETED | BLOCKED | FAILED
 Leaf: <R#.## or NONE>
 Summary: <1-3 lines>
 Blocking Reason: <NONE or concise reason>
-Scratchpad Updated: YES | NO
-Scratchpad Reasoning Logged: YES | NO
 Files Changed:
 - <path>
+- <path>
+- ...
 Tests Added/Updated:
 - <path::test_name>
+- <path::test_name>
+- ...
 Gates Run:
 - <command> => <pass/fail>
+- <command> => <pass/fail>
+- ...
 Failing Tests:
 - <test_name or NONE>
-Out-of-Scope Failures:
 - <test_name or NONE>
-Evidence Logged: YES | NO
-Test Integrity: PRESERVED | MODIFIED_WITH_SPEC_JUSTIFICATION | VIOLATION
-Test File Deletions: YES | NO
-New Skip/XFail: YES | NO
+- ...
 Commit: <hash or NONE>
 Next Action: <single next step>
+</structure>
+
+However, if all leaf tasks have been checked, simply print
+"DONE"
+
 </run_output_contract>
 
 <structure_of_SPEC.md>
