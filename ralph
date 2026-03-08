@@ -1,0 +1,863 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+STATE_DIR=".codex"
+STATE_FILE="$STATE_DIR/ralph-loop.local.md"
+LAST_MESSAGE_FILE="$STATE_DIR/ralph-last-message.txt"
+USAGE_FILE="$STATE_DIR/ralph-usage.local.json"
+CODEX_SESSIONS_DIR="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+FIVE_HOUR_WINDOW_SECONDS=$((5 * 60 * 60))
+DEFAULT_FIVE_HOUR_LIMIT_SECONDS=$FIVE_HOUR_WINDOW_SECONDS
+WEEK_WINDOW_SECONDS=$((7 * 24 * 60 * 60))
+
+err() {
+  echo "ERROR: $*" >&2
+}
+
+warn() {
+  echo "WARN: $*" >&2
+}
+
+die() {
+  err "$@"
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found in PATH: $1"
+}
+
+usage() {
+  cat <<'USAGE'
+Ralph Wiggum for Codex
+
+Usage:
+  ralph loop [PROMPT...] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--] [codex exec args]
+  ralph cancel
+  ralph status
+  ralph help
+
+Notes:
+  - PROMPT can be omitted if provided via stdin (multi-line supported).
+  - When --completion-promise is set, Ralph appends an explicit `<promise>...</promise>` completion instruction to the loop prompt.
+  - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
+
+Examples:
+  ralph loop Build a todo API --completion-promise "DONE" --max-iterations 20
+  ralph loop --max-iterations 10 Fix auth bug -- --model o3
+  ralph loop Fix auth bug --weekly-limit-hours auto -- --model o3
+  cat PROMPT.md | ralph loop --completion-promise "OK" -- --sandbox workspace-write
+USAGE
+}
+
+loop_help() {
+  cat <<'USAGE'
+ralph loop
+
+Usage:
+  ralph loop [PROMPT...] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--] [codex exec args]
+
+Options:
+  --max-iterations N        Max iterations before auto-stop (default: unlimited)
+  --completion-promise TEXT Promise phrase; stop when <promise>TEXT</promise> appears
+  --weekly-limit-hours N|auto
+                            Weekly runtime budget in hours, or auto-detect from Codex telemetry
+                            (default: $RALPH_WEEKLY_LIMIT_HOURS, or auto)
+  -h, --help                Show this help
+
+Notes:
+  - PROMPT can be provided via stdin if omitted (multi-line supported).
+  - When --completion-promise is set, Ralph appends an explicit `<promise>...</promise>` completion instruction to the loop prompt.
+  - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
+  - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
+  - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
+USAGE
+}
+
+read_frontmatter_value() {
+  local key="$1"
+  local value
+  value=$(awk -v k="$key" '
+    BEGIN {in=0}
+    /^---$/ {in=!in; next}
+    in && $0 ~ "^" k ":" {
+      sub("^[^:]*: *", "", $0)
+      print $0
+      exit
+    }
+  ' "$STATE_FILE" 2>/dev/null || true)
+  value="${value#\"}"
+  value="${value%\"}"
+  printf '%s' "$value"
+}
+
+write_state_file() {
+  local prompt="$1"
+  local max_iterations="$2"
+  local completion_promise="$3"
+  local codex_args_serialized="$4"
+  local completion_yaml="null"
+  local codex_args_yaml="null"
+
+  if [[ -n "$completion_promise" ]]; then
+    completion_yaml="\"$completion_promise\""
+  fi
+  if [[ -n "$codex_args_serialized" ]]; then
+    codex_args_yaml="\"$codex_args_serialized\""
+  fi
+
+  mkdir -p "$STATE_DIR"
+
+  cat > "$STATE_FILE" <<STATE_EOF
+---
+active: true
+iteration: 1
+max_iterations: $max_iterations
+completion_promise: $completion_yaml
+codex_args: $codex_args_yaml
+started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+---
+
+$prompt
+STATE_EOF
+}
+
+update_iteration() {
+  local iteration="$1"
+  local tmp="${STATE_FILE}.tmp.$$"
+  mkdir -p "$STATE_DIR"
+  sed "s/^iteration: .*/iteration: $iteration/" "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+extract_promise_text() {
+  local file="$1"
+  python3 - "$file" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, 'r', encoding='utf-8', errors='ignore').read()
+except FileNotFoundError:
+    sys.exit(3)
+matches = re.findall(r'<promise>(.*?)</promise>', text, flags=re.S)
+if not matches:
+    sys.exit(2)
+# Use the last promise tag in the message so intermediate examples do not override completion.
+value = matches[-1].strip()
+value = ' '.join(value.split())
+print(value)
+PY
+}
+
+ensure_usage_state() {
+  local weekly_limit_seconds="$1"
+  mkdir -p "$STATE_DIR"
+  python3 - "$USAGE_FILE" "$DEFAULT_FIVE_HOUR_LIMIT_SECONDS" "$FIVE_HOUR_WINDOW_SECONDS" "$weekly_limit_seconds" "$WEEK_WINDOW_SECONDS" <<'PY'
+import json
+import os
+import sys
+import time
+
+path, five_limit, five_window, week_limit, week_window = sys.argv[1:]
+now = int(time.time())
+five_limit = int(five_limit)
+five_window = int(five_window)
+week_limit = int(week_limit)
+week_window = int(week_window)
+
+state = {}
+if os.path.exists(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+
+epoch = int(state.get("epoch", now))
+segments = state.get("segments", [])
+max_keep_start = now - max(five_window, week_window)
+clean = []
+for item in segments:
+    if not isinstance(item, list) or len(item) != 2:
+        continue
+    start, end = item
+    try:
+        start = int(start)
+        end = int(end)
+    except Exception:
+        continue
+    if end <= start:
+        continue
+    if end <= max_keep_start:
+        continue
+    clean.append([start, end])
+
+updated = {
+    "version": 1,
+    "epoch": epoch,
+    "five_hour_limit_seconds": five_limit,
+    "five_hour_window_seconds": five_window,
+    "weekly_limit_seconds": int(state.get("weekly_limit_seconds", 0)) if week_limit < 0 else week_limit,
+    "weekly_window_seconds": week_window,
+    "weekly_limit_mode": "auto" if week_limit < 0 else "manual",
+    "segments": clean,
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(updated, f, separators=(",", ":"))
+PY
+}
+
+refresh_codex_rate_limits() {
+  python3 - "$USAGE_FILE" "$CODEX_SESSIONS_DIR" <<'PY'
+import json
+import os
+import sys
+import time
+from statistics import median
+
+usage_file, sessions_dir = sys.argv[1:]
+now = int(time.time())
+
+state = {}
+if os.path.exists(usage_file):
+    try:
+        with open(usage_file, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+
+latest_path = None
+latest_mtime = -1.0
+if os.path.isdir(sessions_dir):
+    for root, _, files in os.walk(sessions_dir):
+        for name in files:
+            if not name.endswith(".jsonl") or "rollout-" not in name:
+                continue
+            path = os.path.join(root, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_path = path
+
+if not latest_path:
+    with open(usage_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, separators=(",", ":"))
+    sys.exit(0)
+
+last_rate = None
+try:
+    with open(latest_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type") != "token_count":
+                continue
+            rate = payload.get("rate_limits")
+            if isinstance(rate, dict) and "primary" in rate and "secondary" in rate:
+                last_rate = rate
+except Exception:
+    pass
+
+if not last_rate:
+    with open(usage_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, separators=(",", ":"))
+    sys.exit(0)
+
+primary = last_rate.get("primary") or {}
+secondary = last_rate.get("secondary") or {}
+try:
+    p_used = float(primary.get("used_percent", 0.0))
+    s_used = float(secondary.get("used_percent", 0.0))
+except Exception:
+    p_used = 0.0
+    s_used = 0.0
+
+try:
+    p_window = int(primary.get("window_minutes", 300)) * 60
+except Exception:
+    p_window = int(state.get("five_hour_window_seconds", 18000))
+try:
+    s_window = int(secondary.get("window_minutes", 10080)) * 60
+except Exception:
+    s_window = int(state.get("weekly_window_seconds", 604800))
+
+try:
+    p_reset = int(primary.get("resets_at", 0))
+except Exception:
+    p_reset = 0
+try:
+    s_reset = int(secondary.get("resets_at", 0))
+except Exception:
+    s_reset = 0
+
+state["five_hour_window_seconds"] = p_window
+state["weekly_window_seconds"] = s_window
+state["codex_primary_used_percent"] = p_used
+state["codex_secondary_used_percent"] = s_used
+state["codex_primary_resets_at"] = p_reset
+state["codex_secondary_resets_at"] = s_reset
+state["codex_rate_observed_at"] = now
+
+mode = str(state.get("weekly_limit_mode", "auto"))
+five_limit_seconds = int(state.get("five_hour_limit_seconds", 18000))
+
+prev_p = state.get("last_primary_used_percent")
+prev_s = state.get("last_secondary_used_percent")
+prev_reset = int(state.get("last_secondary_resets_at", 0))
+if (
+    mode == "auto"
+    and isinstance(prev_p, (int, float))
+    and isinstance(prev_s, (int, float))
+    and prev_reset == s_reset
+):
+    dp = p_used - float(prev_p)
+    ds = s_used - float(prev_s)
+    if dp >= 0.25 and ds >= 0.02:
+        est = five_limit_seconds * (dp / ds)
+        min_est = 6 * 60 * 60
+        max_est = 14 * 24 * 60 * 60
+        if min_est <= est <= max_est:
+            estimates = state.get("weekly_limit_estimates_seconds", [])
+            if not isinstance(estimates, list):
+                estimates = []
+            estimates.append(int(round(est)))
+            estimates = estimates[-24:]
+            state["weekly_limit_estimates_seconds"] = estimates
+            state["weekly_limit_seconds"] = int(round(median(estimates)))
+
+state["last_primary_used_percent"] = p_used
+state["last_secondary_used_percent"] = s_used
+state["last_secondary_resets_at"] = s_reset
+state["last_rate_sample_at"] = now
+
+with open(usage_file, "w", encoding="utf-8") as f:
+    json.dump(state, f, separators=(",", ":"))
+PY
+}
+
+enforce_usage_limits() {
+  while true; do
+    local check
+    check=$(python3 - "$USAGE_FILE" <<'PY'
+import json
+import math
+import sys
+import time
+
+path = sys.argv[1]
+now = int(time.time())
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        state = json.load(f)
+except Exception:
+    print("0|usage-state-unavailable")
+    sys.exit(0)
+
+epoch = int(state.get("epoch", now))
+five_window = int(state.get("five_hour_window_seconds", 18000))
+five_limit = int(state.get("five_hour_limit_seconds", 18000))
+week_window = int(state.get("weekly_window_seconds", 604800))
+week_limit = int(state.get("weekly_limit_seconds", 0))
+primary_used_pct = float(state.get("codex_primary_used_percent", -1.0))
+secondary_used_pct = float(state.get("codex_secondary_used_percent", -1.0))
+primary_resets_at = int(state.get("codex_primary_resets_at", 0))
+secondary_resets_at = int(state.get("codex_secondary_resets_at", 0))
+segments = state.get("segments", [])
+
+def overlap_sum(start, end):
+    total = 0
+    for item in segments:
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        s, e = item
+        try:
+            s = int(s)
+            e = int(e)
+        except Exception:
+            continue
+        if e <= start or s >= end:
+            continue
+        total += max(0, min(e, end) - max(s, start))
+    return total
+
+wait_for = 0
+reason = "budget"
+
+if five_limit > 0 and five_window > 0:
+    if primary_resets_at > now:
+        five_end = primary_resets_at
+        five_start = five_end - five_window
+    else:
+        five_period = (now - epoch) // five_window
+        five_start = epoch + five_period * five_window
+        five_end = five_start + five_window
+    used_five = overlap_sum(five_start, five_end)
+    if used_five >= five_limit:
+        wait_for = max(wait_for, five_end - now)
+        reason = "5h budget exhausted"
+    if primary_used_pct >= 99.5 and primary_resets_at > now:
+        wait_for = max(wait_for, primary_resets_at - now)
+        reason = "5h limit exhausted"
+
+if week_limit > 0 and week_window > 0:
+    if secondary_resets_at > now:
+        week_end = secondary_resets_at
+        week_start = week_end - week_window
+    else:
+        week_period = (now - epoch) // week_window
+        week_start = epoch + week_period * week_window
+        week_end = week_start + week_window
+    used_week = overlap_sum(week_start, week_end)
+    elapsed = max(0, now - week_start)
+    if used_week >= week_limit:
+        wait_for = max(wait_for, week_end - now)
+        reason = "weekly budget exhausted"
+    else:
+        target = (week_limit * elapsed) / week_window
+        if used_week > target:
+            next_ok = week_start + math.ceil((used_week * week_window) / week_limit)
+            if next_ok > now:
+                wait_for = max(wait_for, next_ok - now)
+                reason = "weekly pacing"
+    if secondary_used_pct >= 99.5 and secondary_resets_at > now:
+        wait_for = max(wait_for, secondary_resets_at - now)
+        reason = "weekly limit exhausted"
+
+if wait_for < 0:
+    wait_for = 0
+print(f"{wait_for}|{reason}")
+PY
+)
+    local wait_seconds="${check%%|*}"
+    local reason="${check#*|}"
+    if [[ -z "$wait_seconds" || ! "$wait_seconds" =~ ^[0-9]+$ || "$wait_seconds" -le 0 ]]; then
+      break
+    fi
+    echo "Ralph throttling: $reason. Sleeping ${wait_seconds}s."
+    sleep "$wait_seconds"
+  done
+}
+
+record_usage_segment() {
+  local start_epoch="$1"
+  local end_epoch="$2"
+  python3 - "$USAGE_FILE" "$start_epoch" "$end_epoch" <<'PY'
+import json
+import os
+import sys
+import time
+
+path, start, end = sys.argv[1:]
+start = int(start)
+end = int(end)
+if end <= start:
+    sys.exit(0)
+
+now = int(time.time())
+state = {}
+if os.path.exists(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+
+segments = state.get("segments", [])
+segments.append([start, end])
+max_keep = now - max(
+    int(state.get("five_hour_window_seconds", 18000)),
+    int(state.get("weekly_window_seconds", 604800)),
+)
+clean = []
+for item in segments:
+    if not isinstance(item, list) or len(item) != 2:
+        continue
+    s, e = item
+    try:
+        s = int(s)
+        e = int(e)
+    except Exception:
+        continue
+    if e <= s:
+        continue
+    if e <= max_keep:
+        continue
+    clean.append([s, e])
+state["segments"] = clean
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(state, f, separators=(",", ":"))
+PY
+}
+
+is_usage_limit_error() {
+  local err_file="$1"
+  python3 - "$err_file" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    text = open(path, "r", encoding="utf-8", errors="ignore").read().lower()
+except Exception:
+    sys.exit(1)
+
+patterns = [
+    r"usage limit",
+    r"rate limit",
+    r"quota",
+    r"too many requests",
+    r"limit.*reached",
+    r"limit.*exceeded",
+]
+for p in patterns:
+    if re.search(p, text):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+parse_limit_wait_seconds() {
+  local err_file="$1"
+  python3 - "$err_file" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    text = open(path, "r", encoding="utf-8", errors="ignore").read().lower()
+except Exception:
+    print(300)
+    sys.exit(0)
+
+best = 0
+for m in re.finditer(r"(\d+)\s*h(?:ours?)?\s*(\d+)?\s*m?(?:in(?:utes?)?)?", text):
+    h = int(m.group(1))
+    mnt = int(m.group(2) or 0)
+    best = max(best, h * 3600 + mnt * 60)
+for m in re.finditer(r"(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)?\s*s(?:ec(?:ond)?s?)?", text):
+    mnt = int(m.group(1))
+    sec = int(m.group(2) or 0)
+    best = max(best, mnt * 60 + sec)
+for m in re.finditer(r"(\d+)\s*s(?:ec(?:ond)?s?)?", text):
+    best = max(best, int(m.group(1)))
+if best <= 0:
+    best = 300
+print(best)
+PY
+}
+
+cmd_loop() {
+  local max_iterations=0
+  local completion_promise=""
+  local weekly_limit_hours="${RALPH_WEEKLY_LIMIT_HOURS:-auto}"
+  local weekly_limit_seconds=0
+  local -a prompt_parts=()
+  local -a codex_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-iterations)
+        [[ -n "${2:-}" ]] || die "--max-iterations requires a number"
+        [[ "$2" =~ ^[0-9]+$ ]] || die "--max-iterations must be a non-negative integer"
+        max_iterations="$2"
+        shift 2
+        ;;
+      --completion-promise)
+        [[ -n "${2:-}" ]] || die "--completion-promise requires a value"
+        completion_promise="$2"
+        shift 2
+        ;;
+      --weekly-limit-hours)
+        [[ -n "${2:-}" ]] || die "--weekly-limit-hours requires a number"
+        [[ "$2" == "auto" || "$2" =~ ^[0-9]+$ ]] || die "--weekly-limit-hours must be 'auto' or a non-negative integer"
+        weekly_limit_hours="$2"
+        shift 2
+        ;;
+      -h|--help)
+        loop_help
+        exit 0
+        ;;
+      --)
+        shift
+        codex_args=("$@")
+        break
+        ;;
+      *)
+        prompt_parts+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  local prompt="${prompt_parts[*]:-}"
+  if [[ -z "$prompt" && ! -t 0 ]]; then
+    prompt="$(cat)"
+  fi
+
+  [[ -n "$prompt" ]] || die "No prompt provided (pass PROMPT args or pipe via stdin)"
+
+  require_cmd codex
+  require_cmd python3
+
+  [[ "$weekly_limit_hours" == "auto" || "$weekly_limit_hours" =~ ^[0-9]+$ ]] || die "RALPH_WEEKLY_LIMIT_HOURS must be 'auto' or a non-negative integer"
+  if [[ "$weekly_limit_hours" == "auto" ]]; then
+    weekly_limit_seconds=-1
+  else
+    weekly_limit_seconds=$((weekly_limit_hours * 60 * 60))
+  fi
+
+  for arg in "${codex_args[@]}"; do
+    if [[ "$arg" == "--output-last-message" || "$arg" == "-o" ]]; then
+      die "Do not pass --output-last-message/-o; Ralph uses it internally"
+    fi
+  done
+
+  local codex_args_serialized=""
+  if [[ ${#codex_args[@]} -gt 0 ]]; then
+    codex_args_serialized=$(printf '%q ' "${codex_args[@]}")
+    codex_args_serialized=${codex_args_serialized% }
+  fi
+
+  write_state_file "$prompt" "$max_iterations" "$completion_promise" "$codex_args_serialized"
+  ensure_usage_state "$weekly_limit_seconds"
+  refresh_codex_rate_limits
+
+  local loop_prompt="$prompt"
+  if [[ -n "$completion_promise" ]]; then
+    loop_prompt+=$'\n\n<ralph_completion_promise>\n'
+    loop_prompt+="When and only when all requested work for this loop is complete, emit exactly this tag on its own line:"
+    loop_prompt+=$'\n'
+    loop_prompt+="<promise>${completion_promise}</promise>"
+    loop_prompt+=$'\nDo not emit that exact tag before completion.\n'
+    loop_prompt+=$'</ralph_completion_promise>\n'
+  fi
+
+  local iteration=1
+
+  while true; do
+    if [[ ! -f "$STATE_FILE" ]]; then
+      echo "Ralph loop cancelled."
+      exit 0
+    fi
+
+    echo "Ralph iteration $iteration"
+    refresh_codex_rate_limits
+    enforce_usage_limits
+
+    mkdir -p "$STATE_DIR"
+
+    local err_file="$STATE_DIR/ralph-last-error.log"
+    local started_epoch
+    started_epoch=$(date +%s)
+    if ! printf '%s\n' "$loop_prompt" | codex exec "${codex_args[@]}" --output-last-message "$LAST_MESSAGE_FILE" 2> >(tee "$err_file" >&2); then
+      refresh_codex_rate_limits
+      if is_usage_limit_error "$err_file"; then
+        local wait_seconds
+        wait_seconds=$(parse_limit_wait_seconds "$err_file")
+        if [[ ! "$wait_seconds" =~ ^[0-9]+$ || "$wait_seconds" -le 0 ]]; then
+          wait_seconds=300
+        fi
+        warn "codex usage limit reached; sleeping ${wait_seconds}s before retry"
+        sleep "$wait_seconds"
+        continue
+      fi
+      warn "codex exec failed; stopping Ralph loop"
+      rm -f "$STATE_FILE"
+      exit 1
+    fi
+    local ended_epoch
+    ended_epoch=$(date +%s)
+    record_usage_segment "$started_epoch" "$ended_epoch"
+    refresh_codex_rate_limits
+
+    if [[ ! -f "$LAST_MESSAGE_FILE" ]]; then
+      warn "codex exec did not write last message file; stopping Ralph loop"
+      rm -f "$STATE_FILE"
+      exit 1
+    fi
+
+    if [[ -n "$completion_promise" ]]; then
+      local promise_text=""
+      if promise_text=$(extract_promise_text "$LAST_MESSAGE_FILE" 2>/dev/null); then
+        if [[ "$promise_text" == "$completion_promise" ]]; then
+          echo "Ralph loop complete: <promise>$completion_promise</promise>"
+          rm -f "$STATE_FILE"
+          exit 0
+        fi
+      fi
+    fi
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+      echo "Ralph loop cancelled."
+      exit 0
+    fi
+
+    if [[ "$max_iterations" -gt 0 && "$iteration" -ge "$max_iterations" ]]; then
+      echo "Ralph loop: max iterations reached ($max_iterations)."
+      rm -f "$STATE_FILE"
+      exit 0
+    fi
+
+    iteration=$((iteration + 1))
+    update_iteration "$iteration"
+  done
+}
+
+cmd_cancel() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "No active Ralph loop found."
+    exit 0
+  fi
+
+  local iteration
+  iteration=$(read_frontmatter_value "iteration")
+  rm -f "$STATE_FILE"
+  if [[ -n "$iteration" ]]; then
+    echo "Cancelled Ralph loop (was at iteration $iteration)."
+  else
+    echo "Cancelled Ralph loop."
+  fi
+}
+
+cmd_status() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "No active Ralph loop found."
+    exit 0
+  fi
+  if [[ -f "$USAGE_FILE" ]]; then
+    refresh_codex_rate_limits
+  fi
+
+  local iteration max_iterations completion_promise started_at codex_args
+  iteration=$(read_frontmatter_value "iteration")
+  max_iterations=$(read_frontmatter_value "max_iterations")
+  completion_promise=$(read_frontmatter_value "completion_promise")
+  started_at=$(read_frontmatter_value "started_at")
+  codex_args=$(read_frontmatter_value "codex_args")
+
+  echo "Ralph loop active"
+  echo "  iteration: ${iteration:-?}"
+  echo "  max_iterations: ${max_iterations:-?}"
+  echo "  completion_promise: ${completion_promise:-none}"
+  echo "  started_at: ${started_at:-?}"
+  if [[ -n "$codex_args" && "$codex_args" != "null" ]]; then
+    echo "  codex_args: $codex_args"
+  fi
+  if [[ -f "$USAGE_FILE" ]]; then
+    local usage_summary
+    usage_summary=$(python3 - "$USAGE_FILE" <<'PY'
+import json
+import sys
+import time
+
+path = sys.argv[1]
+try:
+    state = json.load(open(path, "r", encoding="utf-8"))
+except Exception:
+    print("  usage_limits: unavailable")
+    sys.exit(0)
+
+now = int(time.time())
+epoch = int(state.get("epoch", now))
+five_w = int(state.get("five_hour_window_seconds", 18000))
+five_l = int(state.get("five_hour_limit_seconds", 18000))
+week_w = int(state.get("weekly_window_seconds", 604800))
+week_l = int(state.get("weekly_limit_seconds", 0))
+week_mode = str(state.get("weekly_limit_mode", "auto"))
+primary_reset = int(state.get("codex_primary_resets_at", 0))
+secondary_reset = int(state.get("codex_secondary_resets_at", 0))
+primary_pct = state.get("codex_primary_used_percent", None)
+secondary_pct = state.get("codex_secondary_used_percent", None)
+segments = state.get("segments", [])
+
+def overlap(start, end):
+    total = 0
+    for item in segments:
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        s, e = item
+        try:
+            s = int(s); e = int(e)
+        except Exception:
+            continue
+        if e <= start or s >= end:
+            continue
+        total += max(0, min(e, end) - max(s, start))
+    return total
+
+if primary_reset > now:
+    five_e = primary_reset
+    five_s = five_e - five_w
+else:
+    five_p = (now - epoch) // five_w
+    five_s = epoch + five_p * five_w
+    five_e = five_s + five_w
+used_five = overlap(five_s, five_e)
+
+print(f"  5h_usage: {used_five}s / {five_l}s")
+if isinstance(primary_pct, (int, float)):
+    print(f"  5h_usage_percent: {float(primary_pct):.1f}%")
+if week_l > 0:
+    if secondary_reset > now:
+        week_e = secondary_reset
+        week_s = week_e - week_w
+    else:
+        week_p = (now - epoch) // week_w
+        week_s = epoch + week_p * week_w
+        week_e = week_s + week_w
+    used_week = overlap(week_s, week_e)
+    print(f"  weekly_usage: {used_week}s / {week_l}s")
+    print(f"  weekly_mode: {week_mode}")
+else:
+    if week_mode == "auto":
+        print("  weekly_usage: auto-detecting")
+    else:
+        print("  weekly_usage: disabled")
+if isinstance(secondary_pct, (int, float)):
+    print(f"  weekly_usage_percent: {float(secondary_pct):.1f}%")
+PY
+)
+    printf '%s\n' "$usage_summary"
+  fi
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    loop|start)
+      cmd_loop "$@"
+      ;;
+    cancel|stop)
+      cmd_cancel
+      ;;
+    status)
+      cmd_status
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      err "Unknown command: $cmd"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

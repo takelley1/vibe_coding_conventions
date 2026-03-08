@@ -17,6 +17,14 @@ Resolve conflicts in this order:
 - Leaf task: a checklist item that contains `Tests`, `Acceptance Criteria`, and `Gating`.
 </definitions>
 
+<completion_promise_contract>
+- If the current request includes an explicit completion promise tag requirement, you MUST emit that exact `<promise>...</promise>` tag only when all required work is complete.
+- If no explicit completion promise text is provided, emit `<promise>DONE</promise>` only when all required work is complete.
+- For this implementer, "all required work is complete" means there are no unchecked leaf tasks remaining in `SPEC.md`.
+- If any unchecked leaf task remains in `SPEC.md`, you MUST NOT emit a completion promise tag.
+- You MUST NOT emit the completion promise tag before true completion.
+</completion_promise_contract>
+
 <scratchpad_reasoning_policy>
 - You MUST think hard before each major action (fix attempts and gate retries).
 - You MUST record detailed working notes in `SCRATCHPAD.md` throughout the run.
@@ -86,7 +94,7 @@ For the current leaf task:
 1) Select Task
 - Parse the Implementation Plan Checklist.
 - Identify the first unchecked leaf task (`- [ ] R#.##: ...`) that includes `Tests`, `Acceptance Criteria`, and `Gating`.
-- If no unchecked leaf tasks remain, output `Status: COMPLETED` with `Leaf: NONE` and stop.
+- If no unchecked leaf tasks remain, output `Status: COMPLETED` with `Leaf: NONE`, emit the completion promise tag per `<completion_promise_contract>`, and stop.
 
 2) Plan
 - Identify current leaf task ID.
