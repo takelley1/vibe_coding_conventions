@@ -1261,6 +1261,81 @@ def test_run_codex_exec_keyboard_interrupt_terminates_process(isolated_paths, mo
     assert fake.killed
 
 
+def test_run_codex_exec_periodic_color_reset(isolated_paths, monkeypatch, capsys):
+    class FakeStream:
+        def __init__(self, content):
+            self.content = content
+            self.index = 0
+
+        def read(self, _size=1):
+            if self.index >= len(self.content):
+                return ""
+            char = self.content[self.index]
+            self.index += 1
+            return char
+
+    class FakeStdin:
+        def write(self, _text):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream("x")
+            self.stderr = FakeStream("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    class StepSelector:
+        def __init__(self):
+            self.map = {}
+            self.step = 0
+
+        def register(self, fileobj, _events, data):
+            self.map[fileobj] = data
+
+        def unregister(self, fileobj):
+            self.map.pop(fileobj, None)
+
+        def select(self, timeout=None):
+            self.step += 1
+            if self.step <= 3:
+                return []
+            for fileobj, data in list(self.map.items()):
+                return [(type("K", (), {"fileobj": fileobj, "data": data})(), None)]
+            return []
+
+        def get_map(self):
+            return self.map
+
+        def close(self):
+            self.map.clear()
+
+    monotonic_values = iter([0.0, 3.0, 3.1, 3.2, 3.3, 3.4, 3.5])
+    monkeypatch.setattr(ralph.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: StepSelector())
+
+    result = ralph.run_codex_exec("prompt", [])
+    assert result.returncode == 0
+    captured = capsys.readouterr()
+    assert ralph.ANSI_COLOR_RESET in captured.out or ralph.ANSI_COLOR_RESET in captured.err
+
+
 def test_print_status_tables_render_markdown():
     rendered = []
 

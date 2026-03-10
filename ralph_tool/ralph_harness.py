@@ -39,6 +39,8 @@ CODEX_SESSIONS_DIR = Path(os.environ.get("CODEX_SESSIONS_DIR", str(Path.home() /
 FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
 DEFAULT_FIVE_HOUR_LIMIT_SECONDS = FIVE_HOUR_WINDOW_SECONDS
 WEEK_WINDOW_SECONDS = 7 * 24 * 60 * 60
+ANSI_COLOR_RESET = "\033[0m"
+COLOR_RESET_INTERVAL_SECONDS = 2.0
 
 
 class RalphError(RuntimeError):
@@ -686,6 +688,7 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
     stderr_buffer = ""
     process: subprocess.Popen[str] | None = None
     selector: selectors.BaseSelector | None = None
+    last_color_reset = time.monotonic()
     try:
         process = subprocess.Popen(
             command,
@@ -728,6 +731,14 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
                     while "\n" in stderr_buffer:
                         line, stderr_buffer = stderr_buffer.split("\n", 1)
                         stderr_parts.append(line + "\n")
+            now = time.monotonic()
+            if now - last_color_reset >= COLOR_RESET_INTERVAL_SECONDS:
+                # Guard against child ANSI state leaks by periodically resetting terminal colors.
+                sys.stdout.write(ANSI_COLOR_RESET)
+                sys.stdout.flush()
+                sys.stderr.write(ANSI_COLOR_RESET)
+                sys.stderr.flush()
+                last_color_reset = now
 
         if stdout_buffer:
             if stdout_buffer.strip():
@@ -749,6 +760,10 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
                 process.wait(timeout=2)
         raise RalphError("Ralph interrupted by user during codex exec") from exc
     finally:
+        sys.stdout.write(ANSI_COLOR_RESET)
+        sys.stdout.flush()
+        sys.stderr.write(ANSI_COLOR_RESET)
+        sys.stderr.flush()
         if selector is not None:
             selector.close()
 
