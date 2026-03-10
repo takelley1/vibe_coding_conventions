@@ -126,6 +126,7 @@ Notes:
   - PROMPT is the user task request and can be omitted if provided via stdin.
   - --prompt overrides the implementer prompt template file for loop passes.
   - --reviewer-prompt overrides the reviewer prompt template file for outer review.
+  - If positional PROMPT and stdin are absent, --prompt file contents are used as PROMPT text.
   - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
 """
 
@@ -151,6 +152,7 @@ Options:
 
 Notes:
   - PROMPT is the user task request and can be provided via stdin if omitted.
+  - If PROMPT and stdin are omitted, --prompt file contents become the PROMPT text.
   - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
   - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
   - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
@@ -776,6 +778,7 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
     max_review_cycles = 5
     implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
     reviewer_prompt_path = str(DEFAULT_REVIEWER_PROMPT_FILE)
+    prompt_option_path: str | None = None
     prompt_parts: list[str] = []
     codex_args: list[str] = []
 
@@ -805,7 +808,8 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
         if token == "--prompt":
             if index + 1 >= len(args):
                 raise RalphError("--prompt requires a file path")
-            implementer_prompt_path = args[index + 1]
+            prompt_option_path = args[index + 1]
+            implementer_prompt_path = prompt_option_path
             index += 2
             continue
         if token == "--reviewer-prompt":
@@ -839,6 +843,10 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
     prompt = " ".join(prompt_parts).strip()
     if not prompt and stdin_text is not None:
         prompt = stdin_text
+    if not prompt and prompt_option_path is not None:
+        # Allow --prompt to provide user prompt text when positional/stdin prompt is omitted.
+        prompt = read_prompt_file(Path(prompt_option_path))
+        implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
     if not prompt:
         raise RalphError("No prompt provided (pass PROMPT args or pipe via stdin)")
 

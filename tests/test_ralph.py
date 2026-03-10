@@ -33,6 +33,7 @@ def test_usage_text_and_loop_help_contains_new_options():
     assert "--max-review-cycles" in ralph.loop_help_text()
     assert "--prompt PATH" in ralph.usage_text()
     assert "--reviewer-prompt PATH" in ralph.loop_help_text()
+    assert "--prompt file contents are used as PROMPT text" in ralph.usage_text()
 
 
 def test_require_cmd_and_shutil_which_paths(monkeypatch):
@@ -145,6 +146,15 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
         ralph.parse_loop_args(["p"], None)
 
 
+def test_parse_loop_args_uses_prompt_file_when_prompt_omitted(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt from file", encoding="utf-8")
+    opts = ralph.parse_loop_args(["--prompt", str(prompt_file)], None)
+    assert opts.prompt == "prompt from file"
+    assert opts.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
+    assert opts.reviewer_prompt_path == str(ralph.DEFAULT_REVIEWER_PROMPT_FILE)
+
+
 @pytest.mark.parametrize(
     "args,stdin_text,error",
     [
@@ -152,6 +162,7 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
         (["--max-iterations", "x"], None, "non-negative integer"),
         (["--completion-promise"], None, "requires a value"),
         (["--prompt"], None, "requires a file path"),
+        (["--prompt", "does-not-exist.md"], None, "Prompt file not found"),
         (["--reviewer-prompt"], None, "requires a file path"),
         (["--weekly-limit-hours"], None, "requires a number"),
         (["--weekly-limit-hours", "x"], None, "must be 'auto'"),
