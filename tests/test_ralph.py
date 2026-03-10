@@ -31,6 +31,8 @@ def isolated_paths(tmp_path, monkeypatch):
 def test_usage_text_and_loop_help_contains_new_options():
     assert "--max-review-cycles" in ralph.usage_text()
     assert "--max-review-cycles" in ralph.loop_help_text()
+    assert "--prompt PATH" in ralph.usage_text()
+    assert "--reviewer-prompt PATH" in ralph.loop_help_text()
 
 
 def test_require_cmd_and_shutil_which_paths(monkeypatch):
@@ -108,6 +110,10 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
             "2",
             "--completion-promise",
             "X",
+            "--prompt",
+            "impl.md",
+            "--reviewer-prompt",
+            "review.md",
             "--weekly-limit-hours",
             "3",
             "--max-review-cycles",
@@ -121,6 +127,8 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts.prompt == "hello world"
     assert opts.max_iterations == 2
     assert opts.completion_promise == "X"
+    assert opts.implementer_prompt_path == "impl.md"
+    assert opts.reviewer_prompt_path == "review.md"
     assert opts.weekly_limit_hours == "3"
     assert opts.max_review_cycles == 4
     assert opts.codex_args == ["--model", "o3"]
@@ -130,6 +138,8 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "8")
     opts3 = ralph.parse_loop_args(["p"], None)
     assert opts3.weekly_limit_hours == "8"
+    assert opts3.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
+    assert opts3.reviewer_prompt_path == str(ralph.DEFAULT_REVIEWER_PROMPT_FILE)
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "bad")
     with pytest.raises(ralph.RalphError, match="RALPH_WEEKLY_LIMIT_HOURS"):
         ralph.parse_loop_args(["p"], None)
@@ -141,6 +151,8 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
         (["--max-iterations"], None, "requires a number"),
         (["--max-iterations", "x"], None, "non-negative integer"),
         (["--completion-promise"], None, "requires a value"),
+        (["--prompt"], None, "requires a file path"),
+        (["--reviewer-prompt"], None, "requires a file path"),
         (["--weekly-limit-hours"], None, "requires a number"),
         (["--weekly-limit-hours", "x"], None, "must be 'auto'"),
         (["--max-review-cycles"], None, "requires a number"),
@@ -722,6 +734,8 @@ def test_run_loop_success_and_retry_and_caps(isolated_paths, monkeypatch):
 
     options = ralph.LoopOptions(
         prompt="do thing",
+        implementer_prompt_path=str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE),
+        reviewer_prompt_path=str(ralph.DEFAULT_REVIEWER_PROMPT_FILE),
         max_iterations=2,
         completion_promise="DONE",
         weekly_limit_hours="auto",
@@ -779,7 +793,16 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
     monkeypatch.setattr(ralph, "write_state_file", lambda **_: None)
     rc = ralph.run_loop(
-        ralph.LoopOptions("p", 1, "DONE", "auto", 1, []),
+        ralph.LoopOptions(
+            "p",
+            str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE),
+            str(ralph.DEFAULT_REVIEWER_PROMPT_FILE),
+            1,
+            "DONE",
+            "auto",
+            1,
+            [],
+        ),
         console=type("C", (), {"print": lambda self, obj: None})(),
         sleep_fn=lambda _: None,
     )
@@ -796,7 +819,16 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
         )
     monkeypatch.setattr(ralph, "run_inner_loop", inner_and_cancel)
     rc2 = ralph.run_loop(
-        ralph.LoopOptions("p", 1, "DONE", "auto", 1, []),
+        ralph.LoopOptions(
+            "p",
+            str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE),
+            str(ralph.DEFAULT_REVIEWER_PROMPT_FILE),
+            1,
+            "DONE",
+            "auto",
+            1,
+            [],
+        ),
         console=type("C", (), {"print": lambda self, obj: None})(),
         sleep_fn=lambda _: None,
     )
@@ -806,6 +838,8 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
 def dataclasses_replace(options, **kwargs):
     data = {
         "prompt": options.prompt,
+        "implementer_prompt_path": options.implementer_prompt_path,
+        "reviewer_prompt_path": options.reviewer_prompt_path,
         "max_iterations": options.max_iterations,
         "completion_promise": options.completion_promise,
         "weekly_limit_hours": options.weekly_limit_hours,
@@ -998,11 +1032,70 @@ def test_run_loop_cancelled_after_inner(isolated_paths, monkeypatch):
     )
     monkeypatch.setattr(ralph, "print_inner_status_table", lambda *args, **kwargs: ralph.STATE_FILE.unlink(missing_ok=True))
     rc = ralph.run_loop(
-        ralph.LoopOptions("p", 1, "DONE", "auto", 2, []),
+        ralph.LoopOptions(
+            "p",
+            str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE),
+            str(ralph.DEFAULT_REVIEWER_PROMPT_FILE),
+            1,
+            "DONE",
+            "auto",
+            2,
+            [],
+        ),
         console=type("C", (), {"print": lambda self, obj: None})(),
         sleep_fn=lambda _: None,
     )
     assert rc == 0
+
+
+def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
+    monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
+    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
+    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(
+        ralph,
+        "write_state_file",
+        lambda **_: (
+            ralph.STATE_FILE.parent.mkdir(parents=True, exist_ok=True),
+            ralph.STATE_FILE.write_text("---\niteration: 1\n---\n\nx", encoding="utf-8"),
+        ),
+    )
+    monkeypatch.setattr(
+        ralph,
+        "run_inner_loop",
+        lambda **_: ralph.InnerLoopResult("completion_promise", 1, True, 1),
+    )
+    monkeypatch.setattr(
+        ralph,
+        "run_reviewer_once",
+        lambda **_: ralph.ReviewerResult("PASS", True, 1),
+    )
+    monkeypatch.setattr(ralph, "print_inner_status_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ralph, "print_outer_status_table", lambda *args, **kwargs: None)
+
+    seen_paths = []
+
+    def fake_read_prompt(path):
+        seen_paths.append(str(path))
+        return "agent prompt"
+
+    monkeypatch.setattr(ralph, "read_prompt_file", fake_read_prompt)
+    rc = ralph.run_loop(
+        ralph.LoopOptions(
+            prompt="work",
+            implementer_prompt_path="custom-impl.md",
+            reviewer_prompt_path="custom-review.md",
+            max_iterations=1,
+            completion_promise="DONE",
+            weekly_limit_hours="auto",
+            max_review_cycles=1,
+            codex_args=[],
+        ),
+        console=type("C", (), {"print": lambda self, obj: None})(),
+        sleep_fn=lambda _: None,
+    )
+    assert rc == 0
+    assert seen_paths == ["custom-impl.md", "custom-review.md"]
 
 
 def test_run_codex_exec_writes_err_file(isolated_paths, monkeypatch, capsys):

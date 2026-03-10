@@ -48,6 +48,8 @@ class LoopOptions:
     """Parsed options for the loop command."""
 
     prompt: str
+    implementer_prompt_path: str
+    reviewer_prompt_path: str
     max_iterations: int
     completion_promise: str
     weekly_limit_hours: str
@@ -115,15 +117,15 @@ def usage_text() -> str:
     return """Ralph Wiggum for Codex
 
 Usage:
-  ralph loop [PROMPT...] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
   ralph cancel
   ralph status
   ralph help
 
 Notes:
-  - PROMPT can be omitted if provided via stdin (multi-line supported).
-  - Ralph prepends smart implementer prompt defaults for loop passes.
-  - Ralph runs one smart reviewer pass after each inner implementer loop.
+  - PROMPT is the user task request and can be omitted if provided via stdin.
+  - --prompt overrides the implementer prompt template file for loop passes.
+  - --reviewer-prompt overrides the reviewer prompt template file for outer review.
   - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
 """
 
@@ -134,9 +136,11 @@ def loop_help_text() -> str:
     return """ralph loop
 
 Usage:
-  ralph loop [PROMPT...] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
 
 Options:
+  --prompt PATH             Implementer prompt template file (default: SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md)
+  --reviewer-prompt PATH    Reviewer prompt template file (default: SPEC_FILES/smart_agents/3_SPEC_REVIEWER.md)
   --max-iterations N        Max implementer iterations per inner loop (default: unlimited)
   --completion-promise TEXT Promise phrase expected from implementer and reviewer (default: DONE)
   --weekly-limit-hours N|auto
@@ -146,7 +150,7 @@ Options:
   -h, --help                Show this help
 
 Notes:
-  - PROMPT can be provided via stdin if omitted (multi-line supported).
+  - PROMPT is the user task request and can be provided via stdin if omitted.
   - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
   - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
   - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
@@ -770,6 +774,8 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
     completion_promise = "DONE"
     weekly_limit_hours = os.environ.get("RALPH_WEEKLY_LIMIT_HOURS", "auto")
     max_review_cycles = 5
+    implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
+    reviewer_prompt_path = str(DEFAULT_REVIEWER_PROMPT_FILE)
     prompt_parts: list[str] = []
     codex_args: list[str] = []
 
@@ -794,6 +800,18 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
             if index + 1 >= len(args):
                 raise RalphError("--completion-promise requires a value")
             completion_promise = args[index + 1]
+            index += 2
+            continue
+        if token == "--prompt":
+            if index + 1 >= len(args):
+                raise RalphError("--prompt requires a file path")
+            implementer_prompt_path = args[index + 1]
+            index += 2
+            continue
+        if token == "--reviewer-prompt":
+            if index + 1 >= len(args):
+                raise RalphError("--reviewer-prompt requires a file path")
+            reviewer_prompt_path = args[index + 1]
             index += 2
             continue
         if token == "--weekly-limit-hours":
@@ -833,6 +851,8 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
 
     return LoopOptions(
         prompt=prompt,
+        implementer_prompt_path=implementer_prompt_path,
+        reviewer_prompt_path=reviewer_prompt_path,
         max_iterations=max_iterations,
         completion_promise=completion_promise,
         weekly_limit_hours=weekly_limit_hours,
@@ -943,12 +963,12 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
     refresh_codex_rate_limits()
 
     implementer_prompt = build_implementer_prompt(
-        read_prompt_file(DEFAULT_IMPLEMENTER_PROMPT_FILE),
+        read_prompt_file(Path(options.implementer_prompt_path)),
         options.prompt,
         options.completion_promise,
     )
     reviewer_prompt = build_reviewer_prompt(
-        read_prompt_file(DEFAULT_REVIEWER_PROMPT_FILE),
+        read_prompt_file(Path(options.reviewer_prompt_path)),
         options.prompt,
         options.completion_promise,
     )
