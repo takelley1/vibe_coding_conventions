@@ -28,9 +28,10 @@ STATE_FILE = STATE_DIR / "ralph-loop.local.md"
 LAST_MESSAGE_FILE = STATE_DIR / "ralph-last-message.txt"
 USAGE_FILE = STATE_DIR / "ralph-usage.local.json"
 ERR_FILE = STATE_DIR / "ralph-last-error.log"
+PROJECT_ROOT = Path(os.environ.get("RALPH_REPO_ROOT", Path(__file__).resolve().parent.parent)).resolve()
 
-DEFAULT_IMPLEMENTER_PROMPT_FILE = Path("SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md")
-DEFAULT_REVIEWER_PROMPT_FILE = Path("SPEC_FILES/smart_agents/3_SPEC_REVIEWER.md")
+DEFAULT_IMPLEMENTER_PROMPT_FILE = PROJECT_ROOT / "SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md"
+DEFAULT_REVIEWER_PROMPT_FILE = PROJECT_ROOT / "SPEC_FILES/smart_agents/3_SPEC_REVIEWER.md"
 
 CODEX_SESSIONS_DIR = Path(os.environ.get("CODEX_SESSIONS_DIR", str(Path.home() / ".codex/sessions")))
 

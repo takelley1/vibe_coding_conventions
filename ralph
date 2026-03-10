@@ -10,6 +10,8 @@ ACTIVATE_SCRIPT="${VENV_DIR}/bin/activate"
 DEPS_STAMP="${VENV_DIR}/.deps-installed"
 NEEDS_INSTALL=0
 
+export RALPH_REPO_ROOT="${SCRIPT_DIR}"
+
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   if ! command -v python3.12 >/dev/null 2>&1; then
     echo "ERROR: python3.12 is required to bootstrap ${VENV_DIR}" >&2
