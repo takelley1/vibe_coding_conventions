@@ -9,6 +9,9 @@ from ralph_harness import RalphError, err, main
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except KeyboardInterrupt:
+        err("Ralph cancelled by user")
+        raise SystemExit(130)
     except RalphError as exc:
         err(str(exc))
         raise SystemExit(1)

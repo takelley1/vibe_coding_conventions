@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import selectors
 import shlex
 import subprocess
 import sys
@@ -674,23 +675,82 @@ def build_reviewer_prompt(agent_prompt: str, user_prompt: str, completion_promis
 
 
 def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
-    """Execute a codex run and capture stderr for retry logic."""
+    """Execute a codex run, stream output live, and capture stderr for retry logic."""
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     command = ["codex", "exec", *codex_args, "--output-last-message", str(LAST_MESSAGE_FILE)]
-    completed = subprocess.run(
-        command,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if completed.stdout:
-        print(completed.stdout, end="")
-    if completed.stderr:
-        print(completed.stderr, end="", file=sys.stderr)
-    ERR_FILE.write_text(completed.stderr or "", encoding="utf-8")
-    return CommandResult(returncode=completed.returncode, stderr=completed.stderr or "")
+    print("Ralph: starting codex exec...")
+
+    stderr_parts: list[str] = []
+    stdout_buffer = ""
+    stderr_buffer = ""
+    process: subprocess.Popen[str] | None = None
+    selector: selectors.BaseSelector | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        if process.stdin is not None:
+            process.stdin.write(prompt)
+            process.stdin.close()
+
+        selector = selectors.DefaultSelector()
+        if process.stdout is not None:
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        if process.stderr is not None:
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+
+        while selector.get_map():
+            events = selector.select(timeout=0.2)
+            for key, _ in events:
+                chunk = key.fileobj.read(1)
+                stream_name = key.data
+                if chunk == "":
+                    selector.unregister(key.fileobj)
+                    continue
+                if stream_name == "stdout":
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    stdout_buffer += chunk
+                    while "\n" in stdout_buffer:
+                        line, stdout_buffer = stdout_buffer.split("\n", 1)
+                        if line.strip() == "":
+                            continue
+                else:
+                    sys.stderr.write(chunk)
+                    sys.stderr.flush()
+                    stderr_buffer += chunk
+                    while "\n" in stderr_buffer:
+                        line, stderr_buffer = stderr_buffer.split("\n", 1)
+                        stderr_parts.append(line + "\n")
+
+        if stdout_buffer:
+            if stdout_buffer.strip():
+                pass
+        if stderr_buffer:
+            stderr_parts.append(stderr_buffer)
+
+        returncode = process.wait()
+        stderr_text = "".join(stderr_parts)
+        ERR_FILE.write_text(stderr_text, encoding="utf-8")
+        return CommandResult(returncode=returncode, stderr=stderr_text)
+    except KeyboardInterrupt as exc:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        raise RalphError("Ralph interrupted by user during codex exec") from exc
+    finally:
+        if selector is not None:
+            selector.close()
 
 
 def run_with_retries(

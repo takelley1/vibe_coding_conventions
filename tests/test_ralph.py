@@ -1110,27 +1110,155 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
 
 
 def test_run_codex_exec_writes_err_file(isolated_paths, monkeypatch, capsys):
-    class Completed:
-        returncode = 0
-        stdout = "ok"
-        stderr = "warn"
+    class FakeStream:
+        def __init__(self, content):
+            self.content = content
+            self.index = 0
 
-    monkeypatch.setattr(ralph.subprocess, "run", lambda *args, **kwargs: Completed())
+        def read(self, _size=1):
+            if self.index >= len(self.content):
+                return ""
+            char = self.content[self.index]
+            self.index += 1
+            return char
+
+    class FakeStdin:
+        def __init__(self):
+            self.text = ""
+            self.closed = False
+
+        def write(self, text):
+            self.text += text
+
+        def close(self):
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self, stdout_content, stderr_content, returncode=0):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream(stdout_content)
+            self.stderr = FakeStream(stderr_content)
+            self._returncode = returncode
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            return self._returncode
+
+        def poll(self):
+            return self._returncode if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.terminated = True
+
+    class FakeSelector:
+        def __init__(self):
+            self.map = {}
+
+        def register(self, fileobj, _events, data):
+            self.map[fileobj] = data
+
+        def unregister(self, fileobj):
+            self.map.pop(fileobj, None)
+
+        def select(self, timeout=None):
+            for fileobj, data in list(self.map.items()):
+                return [(type("K", (), {"fileobj": fileobj, "data": data})(), None)]
+            return []
+
+        def get_map(self):
+            return self.map
+
+        def close(self):
+            self.map.clear()
+
+    fake = FakeProcess("ok\n", "warn\n", 0)
+    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: FakeSelector())
+
     result = ralph.run_codex_exec("prompt", ["--model", "o3"])
     assert result.returncode == 0
-    assert ralph.ERR_FILE.read_text(encoding="utf-8") == "warn"
+    assert ralph.ERR_FILE.read_text(encoding="utf-8") == "warn\n"
     captured = capsys.readouterr()
+    assert "Ralph: starting codex exec..." in captured.out
     assert "ok" in captured.out
     assert "warn" in captured.err
 
-    class CompletedEmpty:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    monkeypatch.setattr(ralph.subprocess, "run", lambda *args, **kwargs: CompletedEmpty())
+    # Cover blank-line stdout branch and trailing stderr buffer branch.
+    fake_empty = FakeProcess("\nX", "tail", 0)
+    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake_empty)
     result2 = ralph.run_codex_exec("prompt", [])
-    assert result2.stderr == ""
+    assert result2.stderr == "tail"
+
+
+def test_run_codex_exec_keyboard_interrupt_terminates_process(isolated_paths, monkeypatch):
+    class FakeStream:
+        def read(self, _size=1):
+            return ""
+
+    class FakeStdin:
+        def write(self, _text):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream()
+            self.stderr = FakeStream()
+            self.terminated = False
+            self.killed = False
+            self.wait_count = 0
+
+        def wait(self, timeout=None):
+            self.wait_count += 1
+            if self.wait_count == 1:
+                raise ralph.subprocess.TimeoutExpired("codex", timeout)
+            return 130
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    class InterruptSelector:
+        def __init__(self):
+            self.map = {"x": "y"}
+
+        def register(self, fileobj, _events, data):
+            self.map[fileobj] = data
+
+        def unregister(self, fileobj):
+            self.map.pop(fileobj, None)
+
+        def select(self, timeout=None):
+            raise KeyboardInterrupt()
+
+        def get_map(self):
+            return self.map
+
+        def close(self):
+            self.map.clear()
+
+    fake = FakeProcess()
+    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: InterruptSelector())
+    with pytest.raises(ralph.RalphError, match="interrupted by user"):
+        ralph.run_codex_exec("prompt", [])
+    assert fake.terminated
+    assert fake.killed
 
 
 def test_print_status_tables_render_markdown():
@@ -1154,3 +1282,23 @@ def test_print_status_tables_render_markdown():
     )
 
     assert len(rendered) == 2
+
+
+def test_cli_entrypoint_keyboard_interrupt_handled(monkeypatch):
+    import runpy
+    import types
+    from pathlib import Path
+
+    entrypoint = Path(__file__).resolve().parents[1] / "ralph_tool" / "ralph.py"
+
+    fake_harness = types.SimpleNamespace()
+    fake_harness.RalphError = ralph.RalphError
+    fake_harness.main = lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+    errors = []
+    fake_harness.err = lambda msg: errors.append(msg)
+    monkeypatch.setitem(sys.modules, "ralph_harness", fake_harness)
+
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(entrypoint), run_name="__main__")
+    assert exc.value.code == 130
+    assert errors == ["Ralph cancelled by user"]
