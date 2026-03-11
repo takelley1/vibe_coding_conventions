@@ -90,6 +90,154 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 - Don't use inline comments. Instead, put the comment on the line before the relevant code.
 - Don't catch overly-broad exceptions. Instead, catch specific exceptions.
 
+## General rules for Python:
+The single most important rule in Dignified Python is to check conditions proactively rather than relying on exceptions for control flow.
+
+# WRONG: Exception as control flow
+try:
+    value = mapping[key]
+    process(value)
+except KeyError:
+    pass
+
+# CORRECT: Check first
+if key in mapping:
+    value = mapping[key]
+    process(value)
+
+# ACCEPTABLE: Third-party API forces exception handling
+def _get_bigquery_sample(sql_client, table_name):
+    """
+    BigQuery's TABLESAMPLE doesn't work on views.
+    There's no reliable way to determine a priori whether
+    a table supports TABLESAMPLE.
+    """
+    try:
+        return sql_client.run_query(f"SELECT * FROM {table_name} TABLESAMPLE...")
+    except Exception:
+        return sql_client.run_query(f"SELECT * FROM {table_name} ORDER BY RAND()...")
+
+2. Never Swallow Exceptions
+
+# WRONG: Silent exception swallowing
+try:
+    risky_operation()
+except:
+    pass
+
+# CORRECT: Let exceptions bubble up
+risky_operation()
+
+3. Magic Methods Must Be O(1)
+Magic methods like__len__, __bool__, and __contains__ are called frequently and implicitly. They must run in constant time.
+
+# WRONG: __len__ doing iteration
+def __len__(self) -> int:
+    return sum(1 for _ in self._items)
+
+# CORRECT: O(1) __len__
+def __len__(self) -> int:
+    return self._count
+
+4. Check Existence Before Resolution
+
+# WRONG: resolve() can raise OSError on non-existent paths
+wt_path_resolved = wt_path.resolve()
+if current_dir.is_relative_to(wt_path_resolved):
+    current_worktree = wt_path_resolved
+
+# CORRECT: Check exists() first
+if wt_path.exists():
+    wt_path_resolved = wt_path.resolve()
+    if current_dir.is_relative_to(wt_path_resolved):
+        current_worktree = wt_path_resolved
+
+5. Defer Import-Time Computation
+
+# WRONG: Path computed at import time
+SESSION_FILE = Path("scratch/current-session-id")
+
+# CORRECT: Defer with @cache
+@cache
+def _session_file_path() -> Path:
+    """Return path to session ID file (cached after first call)."""
+    return Path("scratch/current-session-id")
+
+6. Verify Your Casts at Runtime
+
+# WRONG: Blind cast
+cast(dict[str, Any], doc)["key"] = value
+
+# CORRECT: Assert before cast
+assert isinstance(doc, MutableMapping), f"Expected MutableMapping, got {type(doc)}"
+cast(dict[str, Any], doc)["key"] = value
+
+7. Use Literal Types for Fixed Values
+
+# WRONG: Bare strings
+issues.append(("orphen-state", "desc"))  # Typo goes unnoticed!
+
+# CORRECT: Literal type
+IssueCode = Literal["orphan-state", "orphan-dir", "missing-branch"]
+
+@dataclass(frozen=True)
+class Issue:
+    code: IssueCode
+    message: str
+
+8. Declare Variables Close to Use
+
+# WRONG: Variable declared 20 lines before use
+def process_data(ctx, items):
+    result_path = compute_result_path(ctx)
+    # ... 20 lines of other logic ...
+    save_to_path(transformed, result_path)
+
+# CORRECT: Inline at call site
+def process_data(ctx, items):
+    # ... other logic ...
+    save_to_path(transformed, compute_result_path(ctx))
+
+9. Keyword Arguments for Complex Functions
+
+# WRONG: Positional chaos - what do these values mean?
+response = fetch_data(api_url, 30.0, 3, {"Accept": "application/json"}, token)
+
+# CORRECT: Keyword-only after first param
+def fetch_data(
+    url,
+    *,
+    timeout: float,
+    retries: int,
+    headers: dict[str, str],
+    auth_token: str,
+) -> Response:
+    ...
+
+# Call site is self-documenting
+response = fetch_data(
+    api_url,
+    timeout=30.0,
+    retries=3,
+    headers={"Accept": "application/json"},
+    auth_token=token,
+)
+
+10. Default Values Are Dangerous
+Avoid default parameter values unless absolutely necessary. They are a significant source of bugs because callers forget to pass a parameter and get unexpected results.
+
+# DANGEROUS: Caller forgets encoding, gets wrong behavior
+def process_file(path: Path, encoding: str = "utf-8") -> str:
+    return path.read_text(encoding=encoding)
+
+content = process_file(legacy_latin1_file)  # Bug: should be encoding="latin-1"
+
+# SAFER: Require explicit choice
+def process_file(path: Path, encoding: str) -> str:
+    return path.read_text(encoding=encoding)
+
+content = process_file(legacy_latin1_file, encoding="latin-1")
+
 ## Examples
 
 <Shell>
@@ -168,4 +316,5 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
         #   You can see how starting from the second line it's indented.
         #   Here's the third line of the comment.
         </example>
+
 </Python>
