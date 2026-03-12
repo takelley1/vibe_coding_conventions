@@ -11,6 +11,7 @@ import datetime as dt
 import json
 import math
 import os
+import random
 import re
 import selectors
 import shlex
@@ -29,6 +30,7 @@ STATE_FILE = STATE_DIR / "ralph-loop.local.md"
 LAST_MESSAGE_FILE = STATE_DIR / "ralph-last-message.txt"
 USAGE_FILE = STATE_DIR / "ralph-usage.local.json"
 ERR_FILE = STATE_DIR / "ralph-last-error.log"
+RUNS_DIR = STATE_DIR / "runs"
 PROJECT_ROOT = Path(os.environ.get("RALPH_REPO_ROOT", Path(__file__).resolve().parent.parent)).resolve()
 
 DEFAULT_IMPLEMENTER_PROMPT_FILE = PROJECT_ROOT / "SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md"
@@ -41,6 +43,9 @@ DEFAULT_FIVE_HOUR_LIMIT_SECONDS = FIVE_HOUR_WINDOW_SECONDS
 WEEK_WINDOW_SECONDS = 7 * 24 * 60 * 60
 ANSI_COLOR_RESET = "\033[0m"
 COLOR_RESET_INTERVAL_SECONDS = 2.0
+DEFAULT_MAX_TRANSIENT_RETRIES = 3
+DEFAULT_INITIAL_BACKOFF_SECONDS = 2
+DEFAULT_MAX_BACKOFF_SECONDS = 30
 
 
 class RalphError(RuntimeError):
@@ -58,6 +63,9 @@ class LoopOptions:
     completion_promise: str
     weekly_limit_hours: str
     max_review_cycles: int
+    max_transient_retries: int
+    initial_backoff_seconds: int
+    max_backoff_seconds: int
     codex_args: list[str]
 
 
@@ -67,6 +75,57 @@ class CommandResult:
 
     returncode: int
     stderr: str
+    stdout: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class RetryAttempt:
+    """Transient retry metadata for a single retry attempt."""
+
+    attempt_number: int
+    classification: str
+    delay_seconds: int
+    stderr_summary: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ExecResult:
+    """Successful execution details for a codex invocation."""
+
+    message: str
+    elapsed_seconds: int
+    retry_attempts: tuple[RetryAttempt, ...] = ()
+    stderr: str = ""
+    returncode: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class RunContext:
+    """Per-run artifact and git baseline context."""
+
+    run_id: str
+    run_dir: Path
+    baseline_commit: str | None
+    baseline_note: str | None
+
+
+class RalphExecError(RalphError):
+    """Execution failure with artifact-friendly metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_reason: str,
+        stderr: str = "",
+        retry_attempts: tuple[RetryAttempt, ...] = (),
+        elapsed_seconds: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.failure_reason = failure_reason
+        self.stderr = stderr
+        self.retry_attempts = retry_attempts
+        self.elapsed_seconds = elapsed_seconds
 
 
 @dataclasses.dataclass(frozen=True)
@@ -77,6 +136,9 @@ class InnerLoopResult:
     iterations_run: int
     promise_matched: bool
     elapsed_seconds: int
+    last_message_text: str = ""
+    retry_attempts: tuple[RetryAttempt, ...] = ()
+    last_stderr: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,6 +148,9 @@ class ReviewerResult:
     status: str
     promise_matched: bool
     elapsed_seconds: int
+    last_message_text: str = ""
+    retry_attempts: tuple[RetryAttempt, ...] = ()
+    last_stderr: str = ""
 
 
 def err(message: str) -> None:
@@ -121,7 +186,7 @@ def usage_text() -> str:
     return """Ralph Wiggum for Codex
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
   ralph cancel
   ralph status
   ralph help
@@ -131,6 +196,7 @@ Notes:
   - --prompt overrides the implementer prompt template file for loop passes.
   - --reviewer-prompt overrides the reviewer prompt template file for outer review.
   - If positional PROMPT and stdin are absent, --prompt file contents are used as PROMPT text.
+  - Ralph writes structured run artifacts under .codex/runs/<run_id>/.
   - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
 """
 
@@ -141,7 +207,7 @@ def loop_help_text() -> str:
     return """ralph loop
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
 
 Options:
   --prompt PATH             Implementer prompt template file (default: SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md)
@@ -152,11 +218,16 @@ Options:
                             Weekly runtime budget in hours, or auto-detect from Codex telemetry
                             (default: $RALPH_WEEKLY_LIMIT_HOURS, or auto)
   --max-review-cycles N     Max outer reviewer cycles before failing (default: 5; 0 means unlimited)
+  --max-transient-retries N Max transient codex exec retries (default: 3)
+  --initial-backoff-seconds N
+                            Initial transient retry backoff in seconds (default: 2)
+  --max-backoff-seconds N   Max transient retry backoff in seconds (default: 30)
   -h, --help                Show this help
 
 Notes:
   - PROMPT is the user task request and can be provided via stdin if omitted.
   - If PROMPT and stdin are omitted, --prompt file contents become the PROMPT text.
+  - Reviewer prompts include changed file paths from the latest implementer pass when git is available.
   - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
   - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
   - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
@@ -167,6 +238,22 @@ def now_iso_utc() -> str:
     """Return current UTC timestamp in RFC3339-like format."""
 
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def format_duration_hms(total_seconds: int) -> str:
+    """Format seconds as hours, minutes, and seconds."""
+
+    seconds = max(0, int(total_seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+def format_resume_time(now_epoch: int, wait_seconds: int) -> str:
+    """Format the local planned resume time."""
+
+    resume_at = dt.datetime.fromtimestamp(now_epoch + max(0, wait_seconds)).astimezone()
+    return resume_at.strftime("%Y-%m-%d %I:%M:%S %p %Z")
 
 
 def quote_frontmatter(value: object) -> str:
@@ -234,6 +321,8 @@ def write_state_file(
     max_review_cycles: int,
     completion_promise: str,
     codex_args_serialized: str,
+    run_id: str = "",
+    artifact_dir: str = "",
 ) -> None:
     """Write loop state file with frontmatter."""
 
@@ -246,6 +335,8 @@ def write_state_file(
         "max_review_cycles": max_review_cycles,
         "completion_promise": completion_promise or None,
         "codex_args": codex_args_serialized or None,
+        "run_id": run_id or None,
+        "artifact_dir": artifact_dir or None,
         "started_at": now_iso_utc(),
     }
     header_lines = ["---"]
@@ -269,6 +360,213 @@ def update_state_value(key: str, value: int | str) -> None:
         lines.append(f"{existing_key}: {existing_value}")
     lines.append("---")
     STATE_FILE.write_text("\n".join(lines) + "\n\n" + body, encoding="utf-8")
+
+
+def write_json_file(path: Path, payload: dict[str, object]) -> None:
+    """Write JSON with stable formatting."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_text_file(path: Path, text: str) -> None:
+    """Write UTF-8 text with directory creation."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def generate_run_id(now: dt.datetime | None = None) -> str:
+    """Create a mostly-sortable unique run id."""
+
+    current = now or dt.datetime.now(dt.timezone.utc)
+    suffix = f"{os.getpid()}-{random.randint(1000, 9999)}"
+    return current.strftime("%Y%m%dT%H%M%SZ") + "-" + suffix
+
+
+def build_run_context() -> RunContext:
+    """Create run directory and baseline git context."""
+
+    run_id = generate_run_id()
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    baseline_commit, baseline_note = detect_git_baseline(PROJECT_ROOT)
+    return RunContext(
+        run_id=run_id,
+        run_dir=run_dir,
+        baseline_commit=baseline_commit,
+        baseline_note=baseline_note,
+    )
+
+
+def run_manifest_payload(
+    *,
+    options: LoopOptions,
+    run_context: RunContext,
+    current_review_cycle: int,
+    final_outcome: str,
+    failure_reason: str | None = None,
+    ended_at: str | None = None,
+) -> dict[str, object]:
+    """Build top-level run manifest payload."""
+
+    return {
+        "artifact_dir": str(run_context.run_dir),
+        "baseline_commit": run_context.baseline_commit,
+        "baseline_note": run_context.baseline_note,
+        "codex_args": options.codex_args,
+        "completion_promise": options.completion_promise,
+        "current_review_cycle": current_review_cycle,
+        "ended_at": ended_at,
+        "failure_reason": failure_reason,
+        "final_outcome": final_outcome,
+        "implementer_prompt_path": options.implementer_prompt_path,
+        "initial_backoff_seconds": options.initial_backoff_seconds,
+        "max_backoff_seconds": options.max_backoff_seconds,
+        "max_iterations": options.max_iterations,
+        "max_review_cycles": options.max_review_cycles,
+        "max_transient_retries": options.max_transient_retries,
+        "prompt": options.prompt,
+        "reviewer_prompt_path": options.reviewer_prompt_path,
+        "run_id": run_context.run_id,
+        "started_at": read_frontmatter_value(STATE_FILE, "started_at"),
+        "weekly_limit_hours": options.weekly_limit_hours,
+    }
+
+
+def write_run_manifest(
+    *,
+    options: LoopOptions,
+    run_context: RunContext,
+    current_review_cycle: int,
+    final_outcome: str,
+    failure_reason: str | None = None,
+    ended_at: str | None = None,
+) -> None:
+    """Persist the run manifest."""
+
+    write_json_file(
+        run_context.run_dir / "run_manifest.json",
+        run_manifest_payload(
+            options=options,
+            run_context=run_context,
+            current_review_cycle=current_review_cycle,
+            final_outcome=final_outcome,
+            failure_reason=failure_reason,
+            ended_at=ended_at,
+        ),
+    )
+
+
+def summarize_stderr(stderr_text: str, limit: int = 160) -> str:
+    """Build a compact single-line stderr summary."""
+
+    summary = " ".join(stderr_text.split())
+    if len(summary) <= limit:
+        return summary
+    return summary[: limit - 3] + "..."
+
+
+def classify_transient_failure(stderr_text: str, returncode: int) -> str | None:
+    """Classify a transient execution failure."""
+
+    if is_usage_limit_error(stderr_text):
+        return "usage_limit"
+
+    haystack = stderr_text.lower()
+    network_patterns = [
+        r"timed?\s*out",
+        r"timeout",
+        r"connection reset",
+        r"connection refused",
+        r"connection aborted",
+        r"temporary failure",
+        r"temporarily unavailable",
+        r"broken pipe",
+        r"network is unreachable",
+        r"name or service not known",
+        r"nodename nor servname provided",
+        r"could not resolve",
+        r"dns",
+        r"eai_again",
+        r"tls",
+        r"ssl",
+        r"socket hang up",
+    ]
+    if any(re.search(pattern, haystack) for pattern in network_patterns):
+        return "network"
+    if returncode < 0:
+        return "subprocess_interrupted"
+    return None
+
+
+def compute_backoff_delay(attempt_number: int, initial_backoff_seconds: int, max_backoff_seconds: int) -> int:
+    """Compute capped exponential backoff delay for the next retry."""
+
+    initial = max(1, initial_backoff_seconds)
+    maximum = max(initial, max_backoff_seconds)
+    delay = initial * (2 ** max(0, attempt_number - 1))
+    return min(delay, maximum)
+
+
+def detect_git_baseline(repo_root: Path) -> tuple[str | None, str | None]:
+    """Detect baseline commit for diff-aware review."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return None, f"git unavailable: {exc}"
+
+    if completed.returncode != 0:
+        note = completed.stderr.strip() or "not a git worktree"
+        return None, note
+    return completed.stdout.strip(), None
+
+
+def collect_changed_files(repo_root: Path, baseline_commit: str | None) -> tuple[list[str], str | None]:
+    """Collect repo-relative changed file paths since baseline commit."""
+
+    if not baseline_commit:
+        return [], "diff unavailable: no baseline commit"
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "--name-only", baseline_commit, "--"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return [], f"git unavailable: {exc}"
+
+    if completed.returncode != 0:
+        note = completed.stderr.strip() or "git diff failed"
+        return [], note
+    changed_files = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return changed_files, None
+
+
+def write_exec_artifacts(
+    *,
+    cycle_dir: Path,
+    prefix: str,
+    prompt_text: str,
+    last_message_text: str,
+    stderr_text: str,
+    result_payload: dict[str, object],
+) -> None:
+    """Write per-cycle execution artifacts."""
+
+    write_text_file(cycle_dir / f"{prefix}_prompt.txt", prompt_text)
+    write_text_file(cycle_dir / f"{prefix}_last_message.txt", last_message_text)
+    write_text_file(cycle_dir / f"{prefix}_stderr.log", stderr_text)
+    write_json_file(cycle_dir / f"{prefix}_result.json", result_payload)
 
 
 def extract_promise_text(text: str) -> str | None:
@@ -555,7 +853,11 @@ def enforce_usage_limits(sleep_fn: Callable[[int], None] = time.sleep) -> None:
         wait_seconds, reason = compute_usage_wait_seconds(state, now)
         if wait_seconds <= 0:
             return
-        print(f"Ralph throttling: {reason}. Sleeping {wait_seconds}s.")
+        print(
+            "Ralph throttling:"
+            f" {reason}. Sleeping {format_duration_hms(wait_seconds)}."
+            f" Planned resume: {format_resume_time(now, wait_seconds)}."
+        )
         sleep_fn(wait_seconds)
 
 
@@ -658,10 +960,30 @@ def build_implementer_prompt(agent_prompt: str, user_prompt: str, completion_pro
     return "\n".join(parts).strip() + "\n"
 
 
-def build_reviewer_prompt(agent_prompt: str, user_prompt: str, completion_promise: str) -> str:
+def build_reviewer_prompt(
+    agent_prompt: str,
+    user_prompt: str,
+    completion_promise: str,
+    changed_files: list[str] | None = None,
+    changed_files_note: str | None = None,
+) -> str:
     """Compose reviewer prompt payload with deterministic completion requirement."""
 
     parts = [agent_prompt.rstrip(), "", "<ralph_user_prompt>", user_prompt.strip(), "</ralph_user_prompt>"]
+    parts.extend(
+        [
+            "",
+            "<ralph_changed_files>",
+            "Changed files from latest implementer pass:",
+        ]
+    )
+    if changed_files_note:
+        parts.append(f"NOTE: {changed_files_note}")
+    if changed_files:
+        parts.extend(changed_files)
+    else:
+        parts.append("NONE")
+    parts.append("</ralph_changed_files>")
     parts.extend(
         [
             "",
@@ -684,6 +1006,7 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
     print("Ralph: starting codex exec...")
 
     stderr_parts: list[str] = []
+    stdout_parts: list[str] = []
     stdout_buffer = ""
     stderr_buffer = ""
     process: subprocess.Popen[str] | None = None
@@ -720,6 +1043,7 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
                     sys.stdout.write(chunk)
                     sys.stdout.flush()
                     stdout_buffer += chunk
+                    stdout_parts.append(chunk)
                     while "\n" in stdout_buffer:
                         line, stdout_buffer = stdout_buffer.split("\n", 1)
                         if line.strip() == "":
@@ -749,7 +1073,7 @@ def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
         returncode = process.wait()
         stderr_text = "".join(stderr_parts)
         ERR_FILE.write_text(stderr_text, encoding="utf-8")
-        return CommandResult(returncode=returncode, stderr=stderr_text)
+        return CommandResult(returncode=returncode, stderr=stderr_text, stdout="".join(stdout_parts))
     except KeyboardInterrupt as exc:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -775,32 +1099,77 @@ def run_with_retries(
     refresh_fn: Callable[[], None],
     enforce_fn: Callable[[], None],
     sleep_fn: Callable[[int], None],
-) -> tuple[str, int]:
-    """Run codex with usage-limit retries and return message plus elapsed time."""
+    max_transient_retries: int,
+    initial_backoff_seconds: int,
+    max_backoff_seconds: int,
+) -> ExecResult:
+    """Run codex with transient retries and return execution details."""
 
+    retry_attempts: list[RetryAttempt] = []
+    last_stderr = ""
     while True:
         refresh_fn()
         enforce_fn()
         started_epoch = int(time.time())
         result = run_codex_exec(prompt, codex_args)
         ended_epoch = int(time.time())
+        elapsed_seconds = max(0, ended_epoch - started_epoch)
+        last_stderr = result.stderr
 
         if result.returncode == 0:
             record_usage_segment(started_epoch, ended_epoch)
             refresh_fn()
             if not LAST_MESSAGE_FILE.exists():
-                raise RalphError("codex exec did not write last message file")
+                raise RalphExecError(
+                    "codex exec did not write last message file",
+                    failure_reason="missing_last_message",
+                    stderr=result.stderr,
+                    retry_attempts=tuple(retry_attempts),
+                    elapsed_seconds=elapsed_seconds,
+                )
             message = LAST_MESSAGE_FILE.read_text(encoding="utf-8", errors="ignore")
-            return message, max(0, ended_epoch - started_epoch)
+            return ExecResult(
+                message=message,
+                elapsed_seconds=elapsed_seconds,
+                retry_attempts=tuple(retry_attempts),
+                stderr=result.stderr,
+                returncode=result.returncode,
+            )
 
         refresh_fn()
-        if is_usage_limit_error(result.stderr):
-            wait_seconds = parse_limit_wait_seconds(result.stderr)
-            warn(f"codex usage limit reached; sleeping {wait_seconds}s before retry")
+        classification = classify_transient_failure(result.stderr, result.returncode)
+        if classification is not None and len(retry_attempts) < max_transient_retries:
+            if classification == "usage_limit":
+                wait_seconds = parse_limit_wait_seconds(result.stderr)
+                warn(f"codex usage limit reached; sleeping {wait_seconds}s before retry")
+            else:
+                wait_seconds = compute_backoff_delay(
+                    len(retry_attempts) + 1,
+                    initial_backoff_seconds,
+                    max_backoff_seconds,
+                )
+                warn(f"transient codex failure ({classification}); sleeping {wait_seconds}s before retry")
+            retry_attempts.append(
+                RetryAttempt(
+                    attempt_number=len(retry_attempts) + 1,
+                    classification=classification,
+                    delay_seconds=wait_seconds,
+                    stderr_summary=summarize_stderr(result.stderr),
+                )
+            )
             sleep_fn(wait_seconds)
             continue
 
-        raise RalphError("codex exec failed")
+        failure_reason = "codex_exec_failed"
+        if classification is not None and len(retry_attempts) >= max_transient_retries:
+            failure_reason = f"transient_retry_exhausted:{classification}"
+        raise RalphExecError(
+            "codex exec failed",
+            failure_reason=failure_reason,
+            stderr=last_stderr,
+            retry_attempts=tuple(retry_attempts),
+            elapsed_seconds=elapsed_seconds,
+        )
 
 
 def markdown_table(headers: list[str], values: list[str]) -> str:
@@ -852,6 +1221,9 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
     completion_promise = "DONE"
     weekly_limit_hours = os.environ.get("RALPH_WEEKLY_LIMIT_HOURS", "auto")
     max_review_cycles = 5
+    max_transient_retries = DEFAULT_MAX_TRANSIENT_RETRIES
+    initial_backoff_seconds = DEFAULT_INITIAL_BACKOFF_SECONDS
+    max_backoff_seconds = DEFAULT_MAX_BACKOFF_SECONDS
     implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
     reviewer_prompt_path = str(DEFAULT_REVIEWER_PROMPT_FILE)
     prompt_option_path: str | None = None
@@ -912,6 +1284,33 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
             max_review_cycles = int(candidate)
             index += 2
             continue
+        if token == "--max-transient-retries":
+            if index + 1 >= len(args):
+                raise RalphError("--max-transient-retries requires a number")
+            candidate = args[index + 1]
+            if not re.fullmatch(r"\d+", candidate):
+                raise RalphError("--max-transient-retries must be a non-negative integer")
+            max_transient_retries = int(candidate)
+            index += 2
+            continue
+        if token == "--initial-backoff-seconds":
+            if index + 1 >= len(args):
+                raise RalphError("--initial-backoff-seconds requires a number")
+            candidate = args[index + 1]
+            if not re.fullmatch(r"\d+", candidate):
+                raise RalphError("--initial-backoff-seconds must be a non-negative integer")
+            initial_backoff_seconds = int(candidate)
+            index += 2
+            continue
+        if token == "--max-backoff-seconds":
+            if index + 1 >= len(args):
+                raise RalphError("--max-backoff-seconds requires a number")
+            candidate = args[index + 1]
+            if not re.fullmatch(r"\d+", candidate):
+                raise RalphError("--max-backoff-seconds must be a non-negative integer")
+            max_backoff_seconds = int(candidate)
+            index += 2
+            continue
 
         prompt_parts.append(token)
         index += 1
@@ -941,6 +1340,9 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
         completion_promise=completion_promise,
         weekly_limit_hours=weekly_limit_hours,
         max_review_cycles=max_review_cycles,
+        max_transient_retries=max_transient_retries,
+        initial_backoff_seconds=initial_backoff_seconds,
+        max_backoff_seconds=max_backoff_seconds,
         codex_args=codex_args,
     )
 
@@ -954,11 +1356,17 @@ def run_inner_loop(
     refresh_fn: Callable[[], None],
     enforce_fn: Callable[[], None],
     sleep_fn: Callable[[int], None],
+    max_transient_retries: int,
+    initial_backoff_seconds: int,
+    max_backoff_seconds: int,
 ) -> InnerLoopResult:
     """Run implementer loop until completion promise or iteration cap."""
 
     iteration = 1
     total_elapsed = 0
+    last_message_text = ""
+    all_retry_attempts: list[RetryAttempt] = []
+    last_stderr = ""
 
     while True:
         if not STATE_FILE.exists():
@@ -966,22 +1374,31 @@ def run_inner_loop(
 
         print(f"Ralph iteration {iteration}")
         update_state_value("iteration", iteration)
-        message, elapsed = run_with_retries(
+        exec_result = run_with_retries(
             prompt=loop_prompt,
             codex_args=codex_args,
             refresh_fn=refresh_fn,
             enforce_fn=enforce_fn,
             sleep_fn=sleep_fn,
+            max_transient_retries=max_transient_retries,
+            initial_backoff_seconds=initial_backoff_seconds,
+            max_backoff_seconds=max_backoff_seconds,
         )
-        total_elapsed += elapsed
+        total_elapsed += exec_result.elapsed_seconds
+        last_message_text = exec_result.message
+        last_stderr = exec_result.stderr
+        all_retry_attempts.extend(exec_result.retry_attempts)
 
-        promise_text = extract_promise_text(message)
+        promise_text = extract_promise_text(exec_result.message)
         if promise_text == completion_promise:
             return InnerLoopResult(
                 termination_reason="completion_promise",
                 iterations_run=iteration,
                 promise_matched=True,
                 elapsed_seconds=total_elapsed,
+                last_message_text=last_message_text,
+                retry_attempts=tuple(all_retry_attempts),
+                last_stderr=last_stderr,
             )
 
         if max_iterations > 0 and iteration >= max_iterations:
@@ -990,6 +1407,9 @@ def run_inner_loop(
                 iterations_run=iteration,
                 promise_matched=False,
                 elapsed_seconds=total_elapsed,
+                last_message_text=last_message_text,
+                retry_attempts=tuple(all_retry_attempts),
+                last_stderr=last_stderr,
             )
 
         if not STATE_FILE.exists():
@@ -1006,24 +1426,33 @@ def run_reviewer_once(
     refresh_fn: Callable[[], None],
     enforce_fn: Callable[[], None],
     sleep_fn: Callable[[int], None],
+    max_transient_retries: int,
+    initial_backoff_seconds: int,
+    max_backoff_seconds: int,
 ) -> ReviewerResult:
     """Run a single reviewer pass and parse mandatory status output."""
 
-    message, elapsed = run_with_retries(
+    exec_result = run_with_retries(
         prompt=reviewer_prompt,
         codex_args=codex_args,
         refresh_fn=refresh_fn,
         enforce_fn=enforce_fn,
         sleep_fn=sleep_fn,
+        max_transient_retries=max_transient_retries,
+        initial_backoff_seconds=initial_backoff_seconds,
+        max_backoff_seconds=max_backoff_seconds,
     )
-    status = parse_review_status(message)
+    status = parse_review_status(exec_result.message)
     if status is None:
         raise RalphError("reviewer output missing 'Overall status' line")
-    promise_text = extract_promise_text(message)
+    promise_text = extract_promise_text(exec_result.message)
     return ReviewerResult(
         status=status,
         promise_matched=promise_text == completion_promise,
-        elapsed_seconds=elapsed,
+        elapsed_seconds=exec_result.elapsed_seconds,
+        last_message_text=exec_result.message,
+        retry_attempts=exec_result.retry_attempts,
+        last_stderr=exec_result.stderr,
     )
 
 
@@ -1034,6 +1463,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
 
     weekly_limit_seconds = -1 if options.weekly_limit_hours == "auto" else int(options.weekly_limit_hours) * 3600
     codex_args_serialized = shlex.join(options.codex_args) if options.codex_args else ""
+    run_context = build_run_context()
 
     write_state_file(
         prompt=options.prompt,
@@ -1041,81 +1471,269 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
         max_review_cycles=options.max_review_cycles,
         completion_promise=options.completion_promise,
         codex_args_serialized=codex_args_serialized,
+        run_id=run_context.run_id,
+        artifact_dir=str(run_context.run_dir),
+    )
+    write_run_manifest(
+        options=options,
+        run_context=run_context,
+        current_review_cycle=1,
+        final_outcome="running",
     )
 
     ensure_usage_state(weekly_limit_seconds)
     refresh_codex_rate_limits()
 
+    implementer_agent_prompt = read_prompt_file(Path(options.implementer_prompt_path))
+    reviewer_agent_prompt = read_prompt_file(Path(options.reviewer_prompt_path))
     implementer_prompt = build_implementer_prompt(
-        read_prompt_file(Path(options.implementer_prompt_path)),
-        options.prompt,
-        options.completion_promise,
-    )
-    reviewer_prompt = build_reviewer_prompt(
-        read_prompt_file(Path(options.reviewer_prompt_path)),
+        implementer_agent_prompt,
         options.prompt,
         options.completion_promise,
     )
 
     review_cycle = 1
-    while True:
-        if not STATE_FILE.exists():
-            print("Ralph loop cancelled.")
-            return 0
-        update_state_value("review_cycle", review_cycle)
+    try:
+        while True:
+            if not STATE_FILE.exists():
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome="cancelled",
+                    ended_at=now_iso_utc(),
+                )
+                print("Ralph loop cancelled.")
+                return 0
+            update_state_value("review_cycle", review_cycle)
+            cycle_dir = run_context.run_dir / f"review_cycle_{review_cycle:03d}"
 
-        inner_result = run_inner_loop(
-            loop_prompt=implementer_prompt,
-            codex_args=options.codex_args,
-            completion_promise=options.completion_promise,
-            max_iterations=options.max_iterations,
-            refresh_fn=refresh_codex_rate_limits,
-            enforce_fn=enforce_usage_limits,
-            sleep_fn=sleep_fn,
-        )
-        print_inner_status_table(
-            console,
-            review_cycle=review_cycle,
-            result=inner_result,
-            next_action="run_reviewer",
-        )
+            try:
+                inner_result = run_inner_loop(
+                    loop_prompt=implementer_prompt,
+                    codex_args=options.codex_args,
+                    completion_promise=options.completion_promise,
+                    max_iterations=options.max_iterations,
+                    refresh_fn=refresh_codex_rate_limits,
+                    enforce_fn=enforce_usage_limits,
+                    sleep_fn=sleep_fn,
+                    max_transient_retries=options.max_transient_retries,
+                    initial_backoff_seconds=options.initial_backoff_seconds,
+                    max_backoff_seconds=options.max_backoff_seconds,
+                )
+            except RalphExecError as exc:
+                write_exec_artifacts(
+                    cycle_dir=cycle_dir,
+                    prefix="implementer",
+                    prompt_text=implementer_prompt,
+                    last_message_text="",
+                    stderr_text=exc.stderr,
+                    result_payload={
+                        "elapsed_seconds": exc.elapsed_seconds,
+                        "failure_reason": exc.failure_reason,
+                        "retry_attempts": [dataclasses.asdict(item) for item in exc.retry_attempts],
+                        "returncode": 1,
+                        "termination_reason": "error",
+                    },
+                )
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome="failed",
+                    failure_reason=exc.failure_reason,
+                    ended_at=now_iso_utc(),
+                )
+                raise
 
-        if not STATE_FILE.exists():
-            print("Ralph loop cancelled.")
-            return 0
+            changed_files, changed_files_note = collect_changed_files(PROJECT_ROOT, run_context.baseline_commit)
+            write_exec_artifacts(
+                cycle_dir=cycle_dir,
+                prefix="implementer",
+                prompt_text=implementer_prompt,
+                last_message_text=inner_result.last_message_text,
+                stderr_text=inner_result.last_stderr,
+                result_payload={
+                    "changed_files": changed_files,
+                    "changed_files_note": changed_files_note,
+                    "elapsed_seconds": inner_result.elapsed_seconds,
+                    "failure_reason": None,
+                    "iterations_run": inner_result.iterations_run,
+                    "promise_matched": inner_result.promise_matched,
+                    "retry_attempts": [dataclasses.asdict(item) for item in inner_result.retry_attempts],
+                    "returncode": 0,
+                    "termination_reason": inner_result.termination_reason,
+                },
+            )
+            print_inner_status_table(
+                console,
+                review_cycle=review_cycle,
+                result=inner_result,
+                next_action="run_reviewer",
+            )
 
-        reviewer_result = run_reviewer_once(
-            reviewer_prompt=reviewer_prompt,
-            codex_args=options.codex_args,
-            completion_promise=options.completion_promise,
-            refresh_fn=refresh_codex_rate_limits,
-            enforce_fn=enforce_usage_limits,
-            sleep_fn=sleep_fn,
-        )
+            if not STATE_FILE.exists():
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome="cancelled",
+                    ended_at=now_iso_utc(),
+                )
+                print("Ralph loop cancelled.")
+                return 0
 
-        if reviewer_result.status in {"PASS", "PASS WITH NITS"} and reviewer_result.promise_matched:
-            print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision="stop")
-            print(f"Ralph loop complete: <promise>{options.completion_promise}</promise>")
-            STATE_FILE.unlink(missing_ok=True)
-            return 0
+            reviewer_prompt = build_reviewer_prompt(
+                reviewer_agent_prompt,
+                options.prompt,
+                options.completion_promise,
+                changed_files,
+                changed_files_note,
+            )
+            try:
+                reviewer_result = run_reviewer_once(
+                    reviewer_prompt=reviewer_prompt,
+                    codex_args=options.codex_args,
+                    completion_promise=options.completion_promise,
+                    refresh_fn=refresh_codex_rate_limits,
+                    enforce_fn=enforce_usage_limits,
+                    sleep_fn=sleep_fn,
+                    max_transient_retries=options.max_transient_retries,
+                    initial_backoff_seconds=options.initial_backoff_seconds,
+                    max_backoff_seconds=options.max_backoff_seconds,
+                )
+            except RalphExecError as exc:
+                write_exec_artifacts(
+                    cycle_dir=cycle_dir,
+                    prefix="reviewer",
+                    prompt_text=reviewer_prompt,
+                    last_message_text="",
+                    stderr_text=exc.stderr,
+                    result_payload={
+                        "decision": "fail",
+                        "elapsed_seconds": exc.elapsed_seconds,
+                        "failure_reason": exc.failure_reason,
+                        "promise_matched": False,
+                        "retry_attempts": [dataclasses.asdict(item) for item in exc.retry_attempts],
+                        "status": "ERROR",
+                    },
+                )
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome="failed",
+                    failure_reason=exc.failure_reason,
+                    ended_at=now_iso_utc(),
+                )
+                raise
+            except RalphError as exc:
+                write_exec_artifacts(
+                    cycle_dir=cycle_dir,
+                    prefix="reviewer",
+                    prompt_text=reviewer_prompt,
+                    last_message_text=LAST_MESSAGE_FILE.read_text(encoding="utf-8", errors="ignore")
+                    if LAST_MESSAGE_FILE.exists()
+                    else "",
+                    stderr_text=ERR_FILE.read_text(encoding="utf-8", errors="ignore") if ERR_FILE.exists() else "",
+                    result_payload={
+                        "decision": "fail",
+                        "elapsed_seconds": 0,
+                        "failure_reason": "reviewer_contract_error",
+                        "promise_matched": False,
+                        "retry_attempts": [],
+                        "status": "ERROR",
+                    },
+                )
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome="failed",
+                    failure_reason="reviewer_contract_error",
+                    ended_at=now_iso_utc(),
+                )
+                raise
 
-        if reviewer_result.status in {"PASS", "PASS WITH NITS"} and not reviewer_result.promise_matched:
-            print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision="fail")
-            STATE_FILE.unlink(missing_ok=True)
-            raise RalphError("reviewer satisfied status missing required completion promise tag")
+            decision = "retry_implementer"
+            failure_reason = None
+            final_outcome = "running"
 
-        if reviewer_result.status != "FAIL":
-            print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision="fail")
-            STATE_FILE.unlink(missing_ok=True)
-            raise RalphError(f"unrecognized reviewer status: {reviewer_result.status}")
+            if reviewer_result.status in {"PASS", "PASS WITH NITS"} and reviewer_result.promise_matched:
+                decision = "stop"
+                final_outcome = "completed"
+            elif reviewer_result.status in {"PASS", "PASS WITH NITS"} and not reviewer_result.promise_matched:
+                decision = "fail"
+                final_outcome = "failed"
+                failure_reason = "reviewer_missing_promise"
+            elif reviewer_result.status != "FAIL":
+                decision = "fail"
+                final_outcome = "failed"
+                failure_reason = "unrecognized_reviewer_status"
+            elif options.max_review_cycles > 0 and review_cycle >= options.max_review_cycles:
+                decision = "max_review_cycles_reached"
+                final_outcome = "failed"
+                failure_reason = "max_review_cycles_reached"
 
-        if options.max_review_cycles > 0 and review_cycle >= options.max_review_cycles:
-            print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision="max_review_cycles_reached")
-            STATE_FILE.unlink(missing_ok=True)
-            raise RalphError(f"reviewer unsatisfied after {options.max_review_cycles} review cycles")
+            write_exec_artifacts(
+                cycle_dir=cycle_dir,
+                prefix="reviewer",
+                prompt_text=reviewer_prompt,
+                last_message_text=reviewer_result.last_message_text,
+                stderr_text=reviewer_result.last_stderr,
+                result_payload={
+                    "decision": decision,
+                    "elapsed_seconds": reviewer_result.elapsed_seconds,
+                    "failure_reason": failure_reason,
+                    "promise_matched": reviewer_result.promise_matched,
+                    "retry_attempts": [dataclasses.asdict(item) for item in reviewer_result.retry_attempts],
+                    "status": reviewer_result.status,
+                },
+            )
 
-        print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision="retry_implementer")
-        review_cycle += 1
+            if final_outcome == "completed":
+                print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision=decision)
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome=final_outcome,
+                    ended_at=now_iso_utc(),
+                )
+                print(f"Ralph loop complete: <promise>{options.completion_promise}</promise>")
+                STATE_FILE.unlink(missing_ok=True)
+                return 0
+
+            if final_outcome == "failed":
+                print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision=decision)
+                write_run_manifest(
+                    options=options,
+                    run_context=run_context,
+                    current_review_cycle=review_cycle,
+                    final_outcome=final_outcome,
+                    failure_reason=failure_reason,
+                    ended_at=now_iso_utc(),
+                )
+                STATE_FILE.unlink(missing_ok=True)
+                if failure_reason == "reviewer_missing_promise":
+                    raise RalphError("reviewer satisfied status missing required completion promise tag")
+                if failure_reason == "unrecognized_reviewer_status":
+                    raise RalphError(f"unrecognized reviewer status: {reviewer_result.status}")
+                raise RalphError(f"reviewer unsatisfied after {options.max_review_cycles} review cycles")
+
+            print_outer_status_table(console, review_cycle=review_cycle, result=reviewer_result, decision=decision)
+            write_run_manifest(
+                options=options,
+                run_context=run_context,
+                current_review_cycle=review_cycle,
+                final_outcome=final_outcome,
+            )
+            review_cycle += 1
+    finally:
+        sys.stdout.write(ANSI_COLOR_RESET)
+        sys.stdout.flush()
+        sys.stderr.write(ANSI_COLOR_RESET)
+        sys.stderr.flush()
 
 
 def cmd_cancel() -> int:
@@ -1207,6 +1825,8 @@ def cmd_status() -> int:
     completion_promise = read_frontmatter_value(STATE_FILE, "completion_promise")
     started_at = read_frontmatter_value(STATE_FILE, "started_at")
     codex_args = read_frontmatter_value(STATE_FILE, "codex_args")
+    run_id = read_frontmatter_value(STATE_FILE, "run_id")
+    artifact_dir = read_frontmatter_value(STATE_FILE, "artifact_dir")
 
     print("Ralph loop active")
     print(f"  review_cycle: {review_cycle or '?'}")
@@ -1215,6 +1835,8 @@ def cmd_status() -> int:
     print(f"  max_iterations: {max_iterations or '?'}")
     print(f"  completion_promise: {completion_promise or 'none'}")
     print(f"  started_at: {started_at or '?'}")
+    print(f"  run_id: {run_id or '?'}")
+    print(f"  artifact_dir: {artifact_dir or '?'}")
     if codex_args:
         print(f"  codex_args: {codex_args}")
 

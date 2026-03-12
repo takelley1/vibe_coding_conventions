@@ -16,7 +16,9 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(ralph, "LAST_MESSAGE_FILE", state_dir / "ralph-last-message.txt")
     monkeypatch.setattr(ralph, "USAGE_FILE", state_dir / "ralph-usage.local.json")
     monkeypatch.setattr(ralph, "ERR_FILE", state_dir / "ralph-last-error.log")
+    monkeypatch.setattr(ralph, "RUNS_DIR", state_dir / "runs")
     monkeypatch.setattr(ralph, "CODEX_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ralph, "PROJECT_ROOT", tmp_path)
 
     implementer = tmp_path / "SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md"
     reviewer = tmp_path / "SPEC_FILES/smart_agents/3_SPEC_REVIEWER.md"
@@ -53,6 +55,8 @@ def test_frontmatter_parse_decode_and_update(isolated_paths):
         max_review_cycles=3,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
+        run_id="run-1",
+        artifact_dir="/tmp/run-1",
     )
     assert ralph.read_frontmatter_value(ralph.STATE_FILE, "iteration") == "1"
     assert ralph.read_frontmatter_value(ralph.STATE_FILE, "completion_promise") == "DONE"
@@ -100,6 +104,10 @@ def test_quote_frontmatter_and_now_iso():
     assert ralph.quote_frontmatter(5) == "5"
     assert ralph.quote_frontmatter("x") == '"x"'
     assert ralph.now_iso_utc().endswith("Z")
+    assert ralph.format_duration_hms(3661) == "1h 1m 1s"
+    resume_text = ralph.format_resume_time(0, 0)
+    assert ":" in resume_text
+    assert resume_text.endswith(("UTC", "EST", "EDT"))
 
 
 def test_parse_loop_args_happy_and_stdin(monkeypatch):
@@ -119,6 +127,12 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
             "3",
             "--max-review-cycles",
             "4",
+            "--max-transient-retries",
+            "6",
+            "--initial-backoff-seconds",
+            "7",
+            "--max-backoff-seconds",
+            "8",
             "--",
             "--model",
             "o3",
@@ -132,6 +146,9 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts.reviewer_prompt_path == "review.md"
     assert opts.weekly_limit_hours == "3"
     assert opts.max_review_cycles == 4
+    assert opts.max_transient_retries == 6
+    assert opts.initial_backoff_seconds == 7
+    assert opts.max_backoff_seconds == 8
     assert opts.codex_args == ["--model", "o3"]
 
     opts2 = ralph.parse_loop_args([], "from stdin")
@@ -141,6 +158,9 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts3.weekly_limit_hours == "8"
     assert opts3.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
     assert opts3.reviewer_prompt_path == str(ralph.DEFAULT_REVIEWER_PROMPT_FILE)
+    assert opts3.max_transient_retries == ralph.DEFAULT_MAX_TRANSIENT_RETRIES
+    assert opts3.initial_backoff_seconds == ralph.DEFAULT_INITIAL_BACKOFF_SECONDS
+    assert opts3.max_backoff_seconds == ralph.DEFAULT_MAX_BACKOFF_SECONDS
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "bad")
     with pytest.raises(ralph.RalphError, match="RALPH_WEEKLY_LIMIT_HOURS"):
         ralph.parse_loop_args(["p"], None)
@@ -168,6 +188,12 @@ def test_parse_loop_args_uses_prompt_file_when_prompt_omitted(tmp_path):
         (["--weekly-limit-hours", "x"], None, "must be 'auto'"),
         (["--max-review-cycles"], None, "requires a number"),
         (["--max-review-cycles", "x"], None, "non-negative integer"),
+        (["--max-transient-retries"], None, "requires a number"),
+        (["--max-transient-retries", "x"], None, "non-negative integer"),
+        (["--initial-backoff-seconds"], None, "requires a number"),
+        (["--initial-backoff-seconds", "x"], None, "non-negative integer"),
+        (["--max-backoff-seconds"], None, "requires a number"),
+        (["--max-backoff-seconds", "x"], None, "non-negative integer"),
         (["--", "--output-last-message"], "prompt", "Do not pass --output-last-message"),
         ([], None, "No prompt provided"),
     ],
@@ -459,7 +485,7 @@ def test_compute_usage_wait_seconds_paths():
     assert isinstance(reason4, str)
 
 
-def test_enforce_usage_limits_sleeps_once(isolated_paths):
+def test_enforce_usage_limits_sleeps_once(isolated_paths, capsys):
     state = {
         "epoch": 0,
         "five_hour_window_seconds": 100,
@@ -492,6 +518,9 @@ def test_enforce_usage_limits_sleeps_once(isolated_paths):
     finally:
         monkeypatch.undo()
     assert calls
+    output = capsys.readouterr().out
+    assert "Sleeping 0h 0m 10s" in output
+    assert "Planned resume:" in output
 
 
 def test_enforce_usage_limits_handles_invalid_file(isolated_paths):
@@ -514,12 +543,108 @@ def test_prompt_builders_and_markdown_table():
     assert "<ralph_user_prompt>" in i_prompt
     assert "<promise>DONE</promise>" in i_prompt
 
-    r_prompt = ralph.build_reviewer_prompt("rev", "user", "DONE")
+    r_prompt = ralph.build_reviewer_prompt("rev", "user", "DONE", ["a.py"], "git ok")
     assert "Overall status" in r_prompt
     assert "<promise>DONE</promise>" in r_prompt
+    assert "Changed files from latest implementer pass" in r_prompt
+    assert "a.py" in r_prompt
 
     table = ralph.markdown_table(["a", "b"], ["1", "2"])
     assert "| a | b |" in table
+
+
+def test_artifact_and_git_helpers(isolated_paths, monkeypatch):
+    ralph.write_text_file(isolated_paths / "x" / "a.txt", "hello")
+    assert (isolated_paths / "x" / "a.txt").read_text(encoding="utf-8") == "hello"
+
+    ralph.write_json_file(isolated_paths / "x" / "b.json", {"b": 1})
+    assert json.loads((isolated_paths / "x" / "b.json").read_text(encoding="utf-8"))["b"] == 1
+
+    assert ralph.summarize_stderr("a" * 200).endswith("...")
+    assert ralph.classify_transient_failure("rate limit", 1) == "usage_limit"
+    assert ralph.classify_transient_failure("connection reset by peer", 1) == "network"
+    assert ralph.classify_transient_failure("fatal", -9) == "subprocess_interrupted"
+    assert ralph.classify_transient_failure("fatal", 1) is None
+    assert ralph.compute_backoff_delay(1, 0, 3) == 1
+    assert ralph.compute_backoff_delay(4, 2, 5) == 5
+
+    class Completed:
+        def __init__(self, returncode, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    calls = iter(
+        [
+            Completed(0, stdout="abc123\n"),
+            Completed(0, stdout="a.py\nb.py\n"),
+            Completed(1, stderr="bad repo"),
+            Completed(1, stderr="bad diff"),
+        ]
+    )
+    monkeypatch.setattr(ralph.subprocess, "run", lambda *args, **kwargs: next(calls))
+    baseline, note = ralph.detect_git_baseline(isolated_paths)
+    assert baseline == "abc123"
+    assert note is None
+    changed, changed_note = ralph.collect_changed_files(isolated_paths, baseline)
+    assert changed == ["a.py", "b.py"]
+    assert changed_note is None
+    baseline2, note2 = ralph.detect_git_baseline(isolated_paths)
+    assert baseline2 is None
+    assert note2 == "bad repo"
+    changed2, changed_note2 = ralph.collect_changed_files(isolated_paths, "abc123")
+    assert changed2 == []
+    assert changed_note2 == "bad diff"
+    changed3, changed_note3 = ralph.collect_changed_files(isolated_paths, None)
+    assert changed3 == []
+    assert "no baseline" in changed_note3
+
+    monkeypatch.setattr(
+        ralph.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("missing git")),
+    )
+    assert "git unavailable" in ralph.detect_git_baseline(isolated_paths)[1]
+    assert "git unavailable" in ralph.collect_changed_files(isolated_paths, "abc123")[1]
+
+    options = ralph.LoopOptions(
+        "prompt",
+        "impl.md",
+        "review.md",
+        2,
+        "DONE",
+        "auto",
+        5,
+        3,
+        2,
+        30,
+        ["--model", "o3"],
+    )
+    run_context = ralph.RunContext("run-1", ralph.RUNS_DIR / "run-1", "abc123", None)
+    manifest = ralph.run_manifest_payload(
+        options=options,
+        run_context=run_context,
+        current_review_cycle=2,
+        final_outcome="running",
+    )
+    assert manifest["run_id"] == "run-1"
+    assert manifest["codex_args"] == ["--model", "o3"]
+    ralph.write_run_manifest(
+        options=options,
+        run_context=run_context,
+        current_review_cycle=2,
+        final_outcome="running",
+    )
+    assert (run_context.run_dir / "run_manifest.json").exists()
+    ralph.write_exec_artifacts(
+        cycle_dir=run_context.run_dir / "review_cycle_001",
+        prefix="implementer",
+        prompt_text="p",
+        last_message_text="m",
+        stderr_text="e",
+        result_payload={"ok": True},
+    )
+    assert (run_context.run_dir / "review_cycle_001" / "implementer_result.json").exists()
 
 
 def test_read_prompt_file_missing_raises(isolated_paths):
@@ -543,15 +668,18 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
 
     monkeypatch.setattr(ralph, "run_codex_exec", fake_run)
     monkeypatch.setattr(ralph.time, "time", lambda: 10)
-    message, elapsed = ralph.run_with_retries(
+    result = ralph.run_with_retries(
         prompt="prompt",
         codex_args=["--model", "o3"],
         refresh_fn=fake_refresh,
         enforce_fn=fake_enforce,
         sleep_fn=lambda _: None,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
-    assert "DONE" in message
-    assert elapsed == 0
+    assert "DONE" in result.message
+    assert result.elapsed_seconds == 0
 
     ralph.LAST_MESSAGE_FILE.unlink()
 
@@ -559,13 +687,16 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
         return ralph.CommandResult(returncode=0, stderr="")
 
     monkeypatch.setattr(ralph, "run_codex_exec", fake_run_no_message)
-    with pytest.raises(ralph.RalphError, match="did not write"):
+    with pytest.raises(ralph.RalphExecError, match="did not write"):
         ralph.run_with_retries(
             prompt="prompt",
             codex_args=[],
             refresh_fn=fake_refresh,
             enforce_fn=fake_enforce,
             sleep_fn=lambda _: None,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
         )
 
 
@@ -588,25 +719,60 @@ def test_run_with_retries_usage_retry_and_failure(isolated_paths, monkeypatch):
 
     slept = []
     monkeypatch.setattr(ralph, "run_codex_exec", fake_run)
-    message, _ = ralph.run_with_retries(
+    result = ralph.run_with_retries(
         prompt="prompt",
         codex_args=[],
         refresh_fn=fake_refresh,
         enforce_fn=fake_enforce,
         sleep_fn=lambda seconds: slept.append(seconds),
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
-    assert "FAIL" in message
+    assert "FAIL" in result.message
     assert slept == [2]
+    assert result.retry_attempts[0].classification == "usage_limit"
 
     monkeypatch.setattr(ralph, "run_codex_exec", lambda _p, _a: ralph.CommandResult(returncode=2, stderr="fatal"))
-    with pytest.raises(ralph.RalphError, match="codex exec failed"):
+    with pytest.raises(ralph.RalphExecError, match="codex exec failed"):
         ralph.run_with_retries(
             prompt="prompt",
             codex_args=[],
             refresh_fn=fake_refresh,
             enforce_fn=fake_enforce,
             sleep_fn=lambda _: None,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
         )
+
+
+def test_run_with_retries_transient_backoff_exhaustion(isolated_paths, monkeypatch):
+    def fake_refresh():
+        return None
+
+    def fake_enforce():
+        return None
+
+    monkeypatch.setattr(
+        ralph,
+        "run_codex_exec",
+        lambda _p, _a: ralph.CommandResult(returncode=1, stderr="connection reset by peer"),
+    )
+    slept = []
+    with pytest.raises(ralph.RalphExecError) as exc:
+        ralph.run_with_retries(
+            prompt="prompt",
+            codex_args=[],
+            refresh_fn=fake_refresh,
+            enforce_fn=fake_enforce,
+            sleep_fn=lambda seconds: slept.append(seconds),
+            max_transient_retries=1,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
+        )
+    assert slept == [2]
+    assert exc.value.failure_reason == "transient_retry_exhausted:network"
 
 
 def test_run_inner_loop_paths(isolated_paths, monkeypatch):
@@ -616,7 +782,7 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
     monkeypatch.setattr(
         ralph,
         "run_with_retries",
-        lambda **_: ("...<promise>DONE</promise>", 3),
+        lambda **_: ralph.ExecResult("...<promise>DONE</promise>", 3),
     )
     result = ralph.run_inner_loop(
         loop_prompt="x",
@@ -626,13 +792,16 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
         refresh_fn=lambda: None,
         enforce_fn=lambda: None,
         sleep_fn=lambda _: None,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
     assert result.promise_matched
     assert result.iterations_run == 1
 
     ralph.STATE_FILE.write_text("---\niteration: 1\n---\n\nbody", encoding="utf-8")
 
-    monkeypatch.setattr(ralph, "run_with_retries", lambda **_: ("no promise", 2))
+    monkeypatch.setattr(ralph, "run_with_retries", lambda **_: ralph.ExecResult("no promise", 2))
     result2 = ralph.run_inner_loop(
         loop_prompt="x",
         codex_args=[],
@@ -641,6 +810,9 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
         refresh_fn=lambda: None,
         enforce_fn=lambda: None,
         sleep_fn=lambda _: None,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
     assert result2.termination_reason == "max_iterations"
 
@@ -654,10 +826,13 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
             refresh_fn=lambda: None,
             enforce_fn=lambda: None,
             sleep_fn=lambda _: None,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
         )
 
     ralph.STATE_FILE.write_text("---\niteration: 1\n---\n\nbody", encoding="utf-8")
-    responses = iter([("no", 1), ("...<promise>DONE</promise>", 1)])
+    responses = iter([ralph.ExecResult("no", 1), ralph.ExecResult("...<promise>DONE</promise>", 1)])
     monkeypatch.setattr(ralph, "run_with_retries", lambda **_: next(responses))
     result3 = ralph.run_inner_loop(
         loop_prompt="x",
@@ -667,6 +842,9 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
         refresh_fn=lambda: None,
         enforce_fn=lambda: None,
         sleep_fn=lambda _: None,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
     assert result3.iterations_run == 2
 
@@ -674,7 +852,7 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
 
     def run_and_delete(**_kwargs):
         ralph.STATE_FILE.unlink(missing_ok=True)
-        return "no", 1
+        return ralph.ExecResult("no", 1)
 
     monkeypatch.setattr(ralph, "run_with_retries", run_and_delete)
     with pytest.raises(SystemExit):
@@ -686,6 +864,9 @@ def test_run_inner_loop_paths(isolated_paths, monkeypatch):
             refresh_fn=lambda: None,
             enforce_fn=lambda: None,
             sleep_fn=lambda _: None,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
         )
 
 
@@ -693,7 +874,7 @@ def test_run_reviewer_once_paths(monkeypatch):
     monkeypatch.setattr(
         ralph,
         "run_with_retries",
-        lambda **_: ("# Review Summary\n- Overall status: PASS\n<promise>DONE</promise>", 4),
+        lambda **_: ralph.ExecResult("# Review Summary\n- Overall status: PASS\n<promise>DONE</promise>", 4),
     )
     result = ralph.run_reviewer_once(
         reviewer_prompt="x",
@@ -702,11 +883,14 @@ def test_run_reviewer_once_paths(monkeypatch):
         refresh_fn=lambda: None,
         enforce_fn=lambda: None,
         sleep_fn=lambda _: None,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
     )
     assert result.status == "PASS"
     assert result.promise_matched
 
-    monkeypatch.setattr(ralph, "run_with_retries", lambda **_: ("missing", 1))
+    monkeypatch.setattr(ralph, "run_with_retries", lambda **_: ralph.ExecResult("missing", 1))
     with pytest.raises(ralph.RalphError, match="missing 'Overall status'"):
         ralph.run_reviewer_once(
             reviewer_prompt="x",
@@ -715,6 +899,9 @@ def test_run_reviewer_once_paths(monkeypatch):
             refresh_fn=lambda: None,
             enforce_fn=lambda: None,
             sleep_fn=lambda _: None,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
         )
 
 
@@ -751,6 +938,9 @@ def test_run_loop_success_and_retry_and_caps(isolated_paths, monkeypatch):
         completion_promise="DONE",
         weekly_limit_hours="auto",
         max_review_cycles=5,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
         codex_args=[],
     )
     assert ralph.run_loop(options, console=DummyConsole(), sleep_fn=lambda _: None) == 0
@@ -812,6 +1002,9 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
             "DONE",
             "auto",
             1,
+            3,
+            2,
+            30,
             [],
         ),
         console=type("C", (), {"print": lambda self, obj: None})(),
@@ -838,6 +1031,9 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
             "DONE",
             "auto",
             1,
+            3,
+            2,
+            30,
             [],
         ),
         console=type("C", (), {"print": lambda self, obj: None})(),
@@ -855,6 +1051,9 @@ def dataclasses_replace(options, **kwargs):
         "completion_promise": options.completion_promise,
         "weekly_limit_hours": options.weekly_limit_hours,
         "max_review_cycles": options.max_review_cycles,
+        "max_transient_retries": options.max_transient_retries,
+        "initial_backoff_seconds": options.initial_backoff_seconds,
+        "max_backoff_seconds": options.max_backoff_seconds,
         "codex_args": options.codex_args,
     }
     data.update(kwargs)
@@ -871,6 +1070,8 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
         max_review_cycles=3,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
+        run_id="run-1",
+        artifact_dir="/tmp/run-1",
     )
     assert ralph.cmd_cancel() == 0
     assert "Cancelled Ralph loop" in capsys.readouterr().out
@@ -884,6 +1085,8 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
         max_review_cycles=3,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
+        run_id="run-2",
+        artifact_dir="/tmp/run-2",
     )
     ralph.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
     ralph.USAGE_FILE.write_text(
@@ -1019,6 +1222,8 @@ def test_parse_stdin_and_cmd_loop_and_main(isolated_paths, monkeypatch, capsys):
         max_review_cycles=3,
         completion_promise="DONE",
         codex_args_serialized="",
+        run_id="run-3",
+        artifact_dir="/tmp/run-3",
     )
     ralph.USAGE_FILE.unlink(missing_ok=True)
     assert ralph.cmd_status() == 0
@@ -1051,6 +1256,9 @@ def test_run_loop_cancelled_after_inner(isolated_paths, monkeypatch):
             "DONE",
             "auto",
             2,
+            3,
+            2,
+            30,
             [],
         ),
         console=type("C", (), {"print": lambda self, obj: None})(),
@@ -1100,6 +1308,9 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
             completion_promise="DONE",
             weekly_limit_hours="auto",
             max_review_cycles=1,
+            max_transient_retries=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=30,
             codex_args=[],
         ),
         console=type("C", (), {"print": lambda self, obj: None})(),
@@ -1107,6 +1318,102 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
     )
     assert rc == 0
     assert seen_paths == ["custom-impl.md", "custom-review.md"]
+
+
+def test_run_loop_writes_artifacts_and_handles_failure_paths(isolated_paths, monkeypatch):
+    monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
+    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
+    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph, "print_inner_status_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ralph, "print_outer_status_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ralph, "generate_run_id", lambda now=None: "run-fixed")
+    monkeypatch.setattr(ralph, "detect_git_baseline", lambda _root: ("base123", None))
+    monkeypatch.setattr(ralph, "collect_changed_files", lambda _root, _base: (["src/a.py"], None))
+
+    options = ralph.LoopOptions(
+        prompt="work",
+        implementer_prompt_path=str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE),
+        reviewer_prompt_path=str(ralph.DEFAULT_REVIEWER_PROMPT_FILE),
+        max_iterations=1,
+        completion_promise="DONE",
+        weekly_limit_hours="auto",
+        max_review_cycles=1,
+        max_transient_retries=3,
+        initial_backoff_seconds=2,
+        max_backoff_seconds=30,
+        codex_args=[],
+    )
+    monkeypatch.setattr(
+        ralph,
+        "run_inner_loop",
+        lambda **_: ralph.InnerLoopResult("completion_promise", 1, True, 1, "impl msg", (), ""),
+    )
+    monkeypatch.setattr(
+        ralph,
+        "run_reviewer_once",
+        lambda **kwargs: ralph.ReviewerResult("PASS", True, 1, kwargs["reviewer_prompt"], (), ""),
+    )
+    rc = ralph.run_loop(
+        options,
+        console=type("C", (), {"print": lambda self, obj: None})(),
+        sleep_fn=lambda _: None,
+    )
+    assert rc == 0
+    run_dir = ralph.RUNS_DIR / "run-fixed"
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["final_outcome"] == "completed"
+    assert json.loads((run_dir / "review_cycle_001" / "implementer_result.json").read_text(encoding="utf-8"))[
+        "changed_files"
+    ] == ["src/a.py"]
+    reviewer_prompt = (run_dir / "review_cycle_001" / "reviewer_prompt.txt").read_text(encoding="utf-8")
+    assert "src/a.py" in reviewer_prompt
+
+    monkeypatch.setattr(
+        ralph,
+        "run_inner_loop",
+        lambda **_: (_ for _ in ()).throw(
+            ralph.RalphExecError(
+                "boom",
+                failure_reason="transient_retry_exhausted:network",
+                stderr="connection reset",
+            )
+        ),
+    )
+    with pytest.raises(ralph.RalphExecError):
+        ralph.run_loop(dataclasses_replace(options), console=type("C", (), {"print": lambda self, obj: None})(), sleep_fn=lambda _: None)
+    fail_manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert fail_manifest["failure_reason"] == "transient_retry_exhausted:network"
+    assert (run_dir / "review_cycle_001" / "implementer_result.json").exists()
+
+    monkeypatch.setattr(
+        ralph,
+        "run_inner_loop",
+        lambda **_: ralph.InnerLoopResult("completion_promise", 1, True, 1, "msg", (), ""),
+    )
+    monkeypatch.setattr(
+        ralph,
+        "run_reviewer_once",
+        lambda **_: (_ for _ in ()).throw(
+            ralph.RalphExecError("boom", failure_reason="codex_exec_failed", stderr="fatal")
+        ),
+    )
+    with pytest.raises(ralph.RalphExecError):
+        ralph.run_loop(dataclasses_replace(options), console=type("C", (), {"print": lambda self, obj: None})(), sleep_fn=lambda _: None)
+    reviewer_fail = json.loads((run_dir / "review_cycle_001" / "reviewer_result.json").read_text(encoding="utf-8"))
+    assert reviewer_fail["status"] == "ERROR"
+
+    ralph.LAST_MESSAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ralph.LAST_MESSAGE_FILE.write_text("bad reviewer output", encoding="utf-8")
+    ralph.ERR_FILE.write_text("stderr", encoding="utf-8")
+    monkeypatch.setattr(
+        ralph,
+        "run_reviewer_once",
+        lambda **_: (_ for _ in ()).throw(ralph.RalphError("reviewer output missing 'Overall status' line")),
+    )
+    with pytest.raises(ralph.RalphError):
+        ralph.run_loop(dataclasses_replace(options), console=type("C", (), {"print": lambda self, obj: None})(), sleep_fn=lambda _: None)
+    reviewer_contract = json.loads((run_dir / "review_cycle_001" / "reviewer_result.json").read_text(encoding="utf-8"))
+    assert reviewer_contract["failure_reason"] == "reviewer_contract_error"
 
 
 def test_run_codex_exec_writes_err_file(isolated_paths, monkeypatch, capsys):
