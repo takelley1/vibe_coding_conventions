@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import selectors
 import subprocess
@@ -12,6 +13,140 @@ from typing import Callable
 
 from ralph_models import CommandResult, ExecResult, RalphError, RalphExecError, RetryAttempt
 from ralph_usage import is_usage_limit_error, parse_limit_wait_seconds
+
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
+ANSI_CYAN = "\033[36m"
+ANSI_DIM = "\033[2m"
+DIFF_FENCE_RE = re.compile(r"^\s*```(?:diff|patch)\s*$")
+
+
+@dataclasses.dataclass
+class _DiffColorState:
+    """Track whether the current stream is inside a diff block."""
+
+    in_diff_fence: bool = False
+    in_raw_diff: bool = False
+
+
+def _is_raw_diff_header(line: str) -> bool:
+    """Return True when a line clearly starts a unified diff block."""
+
+    return line.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+
+
+def _looks_like_raw_diff_line(line: str) -> bool:
+    """Return True for lines that belong to unified diff output."""
+
+    if line == "":
+        return True
+    prefixes = (
+        "diff --git ",
+        "index ",
+        "--- ",
+        "+++ ",
+        "@@ ",
+        "new file mode ",
+        "deleted file mode ",
+        "similarity index ",
+        "rename from ",
+        "rename to ",
+        "old mode ",
+        "new mode ",
+        "Binary files ",
+        "\\ No newline at end of file",
+        "+",
+        "-",
+        " ",
+    )
+    return line.startswith(prefixes)
+
+
+def _diff_line_ansi(line: str) -> str | None:
+    """Choose an ANSI color for a single diff line."""
+
+    if "\033[" in line:
+        return None
+    if line.startswith("diff --git "):
+        return ANSI_CYAN
+    if line.startswith(("index ", "new file mode ", "deleted file mode ", "similarity index ", "rename from ", "rename to ", "old mode ", "new mode ", "Binary files ", "\\ No newline at end of file")):
+        return ANSI_DIM
+    if line.startswith("--- "):
+        return ANSI_RED
+    if line.startswith("+++ "):
+        return ANSI_GREEN
+    if line.startswith("@@ "):
+        return ANSI_CYAN
+    if line.startswith("+") and not line.startswith("+++ "):
+        return ANSI_GREEN
+    if line.startswith("-") and not line.startswith("--- "):
+        return ANSI_RED
+    return None
+
+
+def _render_diff_line(line: str, *, state: _DiffColorState, ansi_color_reset: str) -> str:
+    """Render a line with ANSI styling when it belongs to a diff block."""
+
+    stripped = line.strip()
+    if state.in_diff_fence:
+        if stripped == "```":
+            state.in_diff_fence = False
+            return line
+        ansi = _diff_line_ansi(line)
+        return f"{ansi}{line}{ansi_color_reset}" if ansi else line
+
+    if DIFF_FENCE_RE.match(line):
+        state.in_diff_fence = True
+        return line
+
+    if _is_raw_diff_header(line):
+        state.in_raw_diff = True
+    elif state.in_raw_diff and not _looks_like_raw_diff_line(line):
+        state.in_raw_diff = False
+
+    if not state.in_raw_diff:
+        return line
+
+    ansi = _diff_line_ansi(line)
+    return f"{ansi}{line}{ansi_color_reset}" if ansi else line
+
+
+def _write_rendered_chunk(
+    chunk: str,
+    *,
+    buffer: str,
+    state: _DiffColorState,
+    write_fn: Callable[[str], None],
+    flush_fn: Callable[[], None],
+    ansi_color_reset: str,
+    capture_line_fn: Callable[[str], None] | None = None,
+) -> str:
+    """Write a chunk to a stream, coloring diff lines when possible."""
+
+    buffer += chunk
+    while "\n" in buffer:
+        line, buffer = buffer.split("\n", 1)
+        if capture_line_fn is not None:
+            capture_line_fn(line + "\n")
+        write_fn(_render_diff_line(line, state=state, ansi_color_reset=ansi_color_reset) + "\n")
+        flush_fn()
+    return buffer
+
+
+def _flush_rendered_buffer(
+    buffer: str,
+    *,
+    state: _DiffColorState,
+    write_fn: Callable[[str], None],
+    flush_fn: Callable[[], None],
+    ansi_color_reset: str,
+) -> None:
+    """Flush a trailing unterminated line to the stream."""
+
+    if not buffer:
+        return
+    write_fn(_render_diff_line(buffer, state=state, ansi_color_reset=ansi_color_reset))
+    flush_fn()
 
 
 def summarize_stderr(stderr_text: str, limit: int = 160) -> str:
@@ -89,6 +224,8 @@ def run_codex_exec(
     stdout_parts: list[str] = []
     stdout_buffer = ""
     stderr_buffer = ""
+    stdout_color_state = _DiffColorState()
+    stderr_color_state = _DiffColorState()
     process = None
     selector = None
     last_color_reset = time_module.monotonic()
@@ -120,19 +257,25 @@ def run_codex_exec(
                     selector.unregister(key.fileobj)
                     continue
                 if stream_name == "stdout":
-                    sys_module.stdout.write(chunk)
-                    sys_module.stdout.flush()
-                    stdout_buffer += chunk
                     stdout_parts.append(chunk)
-                    while "\n" in stdout_buffer:
-                        _, stdout_buffer = stdout_buffer.split("\n", 1)
+                    stdout_buffer = _write_rendered_chunk(
+                        chunk,
+                        buffer=stdout_buffer,
+                        state=stdout_color_state,
+                        write_fn=sys_module.stdout.write,
+                        flush_fn=sys_module.stdout.flush,
+                        ansi_color_reset=ansi_color_reset,
+                    )
                 else:
-                    sys_module.stderr.write(chunk)
-                    sys_module.stderr.flush()
-                    stderr_buffer += chunk
-                    while "\n" in stderr_buffer:
-                        line, stderr_buffer = stderr_buffer.split("\n", 1)
-                        stderr_parts.append(line + "\n")
+                    stderr_buffer = _write_rendered_chunk(
+                        chunk,
+                        buffer=stderr_buffer,
+                        state=stderr_color_state,
+                        write_fn=sys_module.stderr.write,
+                        flush_fn=sys_module.stderr.flush,
+                        ansi_color_reset=ansi_color_reset,
+                        capture_line_fn=stderr_parts.append,
+                    )
             now = time_module.monotonic()
             if now - last_color_reset >= color_reset_interval_seconds:
                 sys_module.stdout.write(ansi_color_reset)
@@ -143,6 +286,20 @@ def run_codex_exec(
 
         if stderr_buffer:
             stderr_parts.append(stderr_buffer)
+        _flush_rendered_buffer(
+            stdout_buffer,
+            state=stdout_color_state,
+            write_fn=sys_module.stdout.write,
+            flush_fn=sys_module.stdout.flush,
+            ansi_color_reset=ansi_color_reset,
+        )
+        _flush_rendered_buffer(
+            stderr_buffer,
+            state=stderr_color_state,
+            write_fn=sys_module.stderr.write,
+            flush_fn=sys_module.stderr.flush,
+            ansi_color_reset=ansi_color_reset,
+        )
 
         returncode = process.wait()
         stderr_text = "".join(stderr_parts)

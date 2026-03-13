@@ -1876,6 +1876,186 @@ def test_run_codex_exec_periodic_color_reset(isolated_paths, monkeypatch, capsys
     assert ralph.ANSI_COLOR_RESET in captured.out or ralph.ANSI_COLOR_RESET in captured.err
 
 
+def test_run_codex_exec_colorizes_diff_output(isolated_paths, monkeypatch, capsys):
+    class FakeStream:
+        def __init__(self, content):
+            self.content = content
+            self.index = 0
+
+        def read(self, _size=1):
+            if self.index >= len(self.content):
+                return ""
+            char = self.content[self.index]
+            self.index += 1
+            return char
+
+    class FakeStdin:
+        def write(self, _text):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self, stdout_text, stderr_text=""):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream(stdout_text)
+            self.stderr = FakeStream(stderr_text)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    class FakeSelector:
+        def __init__(self):
+            self.map = {}
+
+        def register(self, fileobj, _events, data):
+            self.map[fileobj] = data
+
+        def unregister(self, fileobj):
+            self.map.pop(fileobj, None)
+
+        def select(self, timeout=None):
+            for fileobj, data in list(self.map.items()):
+                return [(type("K", (), {"fileobj": fileobj, "data": data})(), None)]
+            return []
+
+        def get_map(self):
+            return self.map
+
+        def close(self):
+            self.map.clear()
+
+    diff_text = (
+        "Before\n"
+        "```diff\n"
+        "--- a/demo.txt\n"
+        "+++ b/demo.txt\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "```\n"
+        "diff --git a/raw.txt b/raw.txt\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/raw.txt\n"
+        "+++ b/raw.txt\n"
+        "@@ -1 +1 @@\n"
+        "-left\n"
+        "+right\n"
+        "After\n"
+    )
+    monkeypatch.setattr(ralph_exec.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(diff_text))
+    monkeypatch.setattr(ralph_exec.selectors, "DefaultSelector", lambda: FakeSelector())
+
+    result = ralph_exec.run_codex_exec(
+        "prompt",
+        [],
+        state_dir=ralph.STATE_DIR,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
+        err_file=ralph.ERR_FILE,
+        ansi_color_reset=ralph.ANSI_COLOR_RESET,
+        color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+    )
+    assert result.returncode == 0
+    captured = capsys.readouterr()
+    assert f"\033[31m-old{ralph.ANSI_COLOR_RESET}" in captured.out
+    assert f"\033[32m+new{ralph.ANSI_COLOR_RESET}" in captured.out
+    assert f"\033[36m@@ -1 +1 @@{ralph.ANSI_COLOR_RESET}" in captured.out
+    assert f"\033[2mindex 1111111..2222222 100644{ralph.ANSI_COLOR_RESET}" in captured.out
+
+
+def test_run_codex_exec_does_not_colorize_plain_plus_minus_lines(isolated_paths, monkeypatch, capsys):
+    class FakeStream:
+        def __init__(self, content):
+            self.content = content
+            self.index = 0
+
+        def read(self, _size=1):
+            if self.index >= len(self.content):
+                return ""
+            char = self.content[self.index]
+            self.index += 1
+            return char
+
+    class FakeStdin:
+        def write(self, _text):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self, stdout_text):
+            self.stdin = FakeStdin()
+            self.stdout = FakeStream(stdout_text)
+            self.stderr = FakeStream("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    class FakeSelector:
+        def __init__(self):
+            self.map = {}
+
+        def register(self, fileobj, _events, data):
+            self.map[fileobj] = data
+
+        def unregister(self, fileobj):
+            self.map.pop(fileobj, None)
+
+        def select(self, timeout=None):
+            for fileobj, data in list(self.map.items()):
+                return [(type("K", (), {"fileobj": fileobj, "data": data})(), None)]
+            return []
+
+        def get_map(self):
+            return self.map
+
+        def close(self):
+            self.map.clear()
+
+    monkeypatch.setattr(
+        ralph_exec.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess("- bullet\n+ positive note\n"),
+    )
+    monkeypatch.setattr(ralph_exec.selectors, "DefaultSelector", lambda: FakeSelector())
+
+    result = ralph_exec.run_codex_exec(
+        "prompt",
+        [],
+        state_dir=ralph.STATE_DIR,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
+        err_file=ralph.ERR_FILE,
+        ansi_color_reset=ralph.ANSI_COLOR_RESET,
+        color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+    )
+    assert result.returncode == 0
+    captured = capsys.readouterr()
+    assert f"\033[31m- bullet{ralph.ANSI_COLOR_RESET}" not in captured.out
+    assert f"\033[32m+ positive note{ralph.ANSI_COLOR_RESET}" not in captured.out
+
+
 def test_print_status_tables_render_markdown():
     rendered = []
 
