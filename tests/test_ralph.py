@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ralph_tool"))
+import ralph_cli
+import ralph_exec
 import ralph_harness as ralph
+import ralph_prompts
+import ralph_usage
 
 
 @pytest.fixture()
@@ -30,14 +34,27 @@ def isolated_paths(tmp_path, monkeypatch):
     return tmp_path
 
 
+def parse_loop_args(args, stdin_text):
+    return ralph_cli.parse_loop_args(
+        args,
+        stdin_text,
+        default_implementer_prompt_file=ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE,
+        default_reviewer_prompt_file=ralph.DEFAULT_REVIEWER_PROMPT_FILE,
+        default_max_transient_retries=ralph.DEFAULT_MAX_TRANSIENT_RETRIES,
+        default_initial_backoff_seconds=ralph.DEFAULT_INITIAL_BACKOFF_SECONDS,
+        default_max_backoff_seconds=ralph.DEFAULT_MAX_BACKOFF_SECONDS,
+        read_prompt_file=ralph_prompts.read_prompt_file,
+    )
+
+
 def test_usage_text_and_loop_help_contains_new_options():
-    assert "--max-review-cycles" in ralph.usage_text()
-    assert "--max-review-cycles" in ralph.loop_help_text()
-    assert "--weekly-quota-reserve" in ralph.usage_text()
-    assert "--weekly-quota-reserve" in ralph.loop_help_text()
-    assert "--prompt PATH" in ralph.usage_text()
-    assert "--reviewer-prompt PATH" in ralph.loop_help_text()
-    assert "--prompt file contents are used as PROMPT text" in ralph.usage_text()
+    assert "--max-review-cycles" in ralph_cli.usage_text()
+    assert "--max-review-cycles" in ralph_cli.loop_help_text()
+    assert "--weekly-quota-reserve" in ralph_cli.usage_text()
+    assert "--weekly-quota-reserve" in ralph_cli.loop_help_text()
+    assert "--prompt PATH" in ralph_cli.usage_text()
+    assert "--reviewer-prompt PATH" in ralph_cli.loop_help_text()
+    assert "--prompt file contents are used as PROMPT text" in ralph_cli.usage_text()
 
 
 def test_require_cmd_and_shutil_which_paths(monkeypatch):
@@ -88,18 +105,18 @@ def test_read_frontmatter_and_update_missing_file(isolated_paths):
 
 def test_extract_promise_helpers_and_review_status():
     text = "x <promise>A B</promise> y <promise>DONE</promise>"
-    assert ralph.extract_promise_text(text) == "DONE"
-    assert ralph.extract_promise_text("nope") is None
-    assert ralph.parse_review_status("- Overall status: pass with nits") == "PASS WITH NITS"
-    assert ralph.parse_review_status("Overall status: FAIL") == "FAIL"
-    assert ralph.parse_review_status("unknown") is None
+    assert ralph_prompts.extract_promise_text(text) == "DONE"
+    assert ralph_prompts.extract_promise_text("nope") is None
+    assert ralph_prompts.parse_review_status("- Overall status: pass with nits") == "PASS WITH NITS"
+    assert ralph_prompts.parse_review_status("Overall status: FAIL") == "FAIL"
+    assert ralph_prompts.parse_review_status("unknown") is None
 
 
 def test_extract_promise_text_from_file(isolated_paths):
-    assert ralph.extract_promise_text_from_file(ralph.LAST_MESSAGE_FILE) is None
+    assert ralph_prompts.extract_promise_text_from_file(ralph.LAST_MESSAGE_FILE) is None
     ralph.LAST_MESSAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
     ralph.LAST_MESSAGE_FILE.write_text("x <promise>DONE</promise>", encoding="utf-8")
-    assert ralph.extract_promise_text_from_file(ralph.LAST_MESSAGE_FILE) == "DONE"
+    assert ralph_prompts.extract_promise_text_from_file(ralph.LAST_MESSAGE_FILE) == "DONE"
 
 
 def test_quote_frontmatter_and_now_iso():
@@ -115,7 +132,7 @@ def test_quote_frontmatter_and_now_iso():
 
 
 def test_parse_loop_args_happy_and_stdin(monkeypatch):
-    opts = ralph.parse_loop_args(
+    opts = parse_loop_args(
         [
             "hello",
             "world",
@@ -158,10 +175,10 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts.max_backoff_seconds == 8
     assert opts.codex_args == ["--model", "o3"]
 
-    opts2 = ralph.parse_loop_args([], "from stdin")
+    opts2 = parse_loop_args([], "from stdin")
     assert opts2.prompt == "from stdin"
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "8")
-    opts3 = ralph.parse_loop_args(["p"], None)
+    opts3 = parse_loop_args(["p"], None)
     assert opts3.weekly_limit_hours == "8"
     assert opts3.weekly_quota_reserve_percent == 0
     assert opts3.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
@@ -171,13 +188,13 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts3.max_backoff_seconds == ralph.DEFAULT_MAX_BACKOFF_SECONDS
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "bad")
     with pytest.raises(ralph.RalphError, match="RALPH_WEEKLY_LIMIT_HOURS"):
-        ralph.parse_loop_args(["p"], None)
+        parse_loop_args(["p"], None)
 
 
 def test_parse_loop_args_uses_prompt_file_when_prompt_omitted(tmp_path):
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("prompt from file", encoding="utf-8")
-    opts = ralph.parse_loop_args(["--prompt", str(prompt_file)], None)
+    opts = parse_loop_args(["--prompt", str(prompt_file)], None)
     assert opts.prompt == "prompt from file"
     assert opts.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
     assert opts.reviewer_prompt_path == str(ralph.DEFAULT_REVIEWER_PROMPT_FILE)
@@ -211,12 +228,12 @@ def test_parse_loop_args_uses_prompt_file_when_prompt_omitted(tmp_path):
 )
 def test_parse_loop_args_errors(args, stdin_text, error):
     with pytest.raises(ralph.RalphError, match=error):
-        ralph.parse_loop_args(args, stdin_text)
+        parse_loop_args(args, stdin_text)
 
 
 def test_parse_loop_args_help_exits(capsys):
     with pytest.raises(SystemExit) as exc:
-        ralph.parse_loop_args(["--help"], None)
+        parse_loop_args(["--help"], None)
     assert exc.value.code == 0
     assert "ralph loop" in capsys.readouterr().out
 
@@ -233,37 +250,37 @@ def test_ensure_usage_state_and_record_usage_segment(isolated_paths):
         ),
         encoding="utf-8",
     )
-    ralph.ensure_usage_state(-1, now_epoch=100)
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     state = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert state["weekly_limit_mode"] == "auto"
     assert state["weekly_limit_seconds"] == 22
 
-    ralph.ensure_usage_state(1800, now_epoch=100)
+    ralph_usage.ensure_usage_state(1800, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     state = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert state["weekly_limit_mode"] == "manual"
     assert state["weekly_limit_seconds"] == 1800
 
-    ralph.record_usage_segment(10, 20, now_epoch=50)
+    ralph_usage.record_usage_segment(10, 20, usage_file=ralph.USAGE_FILE, now_epoch=50)
     state2 = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert [10, 20] in state2["segments"]
-    ralph.record_usage_segment(4, 4, now_epoch=50)
+    ralph_usage.record_usage_segment(4, 4, usage_file=ralph.USAGE_FILE, now_epoch=50)
 
     ralph.USAGE_FILE.write_text("{bad json", encoding="utf-8")
-    ralph.ensure_usage_state(-1, now_epoch=100)
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     assert json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))["version"] == 1
 
     ralph.USAGE_FILE.write_text("{bad json", encoding="utf-8")
-    ralph.record_usage_segment(2, 3, now_epoch=10)
+    ralph_usage.record_usage_segment(2, 3, usage_file=ralph.USAGE_FILE, now_epoch=10)
     repaired = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert repaired["segments"] == [[2, 3]]
 
     ralph.USAGE_FILE.write_text(json.dumps({"segments": "bad"}), encoding="utf-8")
-    ralph.record_usage_segment(4, 6, now_epoch=20)
+    ralph_usage.record_usage_segment(4, 6, usage_file=ralph.USAGE_FILE, now_epoch=20)
     repaired2 = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert repaired2["segments"] == [[4, 6]]
 
     ralph.USAGE_FILE.write_text(json.dumps({"segments": [["a", "b"]]}), encoding="utf-8")
-    ralph.ensure_usage_state(-1, now_epoch=100)
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     cleaned = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert cleaned["segments"] == []
 
@@ -271,14 +288,18 @@ def test_ensure_usage_state_and_record_usage_segment(isolated_paths):
         json.dumps({"segments": [[1], ["x", "y"], [3, 1]]}),
         encoding="utf-8",
     )
-    ralph.record_usage_segment(6, 8, now_epoch=9)
+    ralph_usage.record_usage_segment(6, 8, usage_file=ralph.USAGE_FILE, now_epoch=9)
     cleaned2 = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert cleaned2["segments"] == [[6, 8]]
 
 
 def test_refresh_codex_rate_limits_no_session_and_with_session(isolated_paths):
-    ralph.ensure_usage_state(-1, now_epoch=100)
-    ralph.refresh_codex_rate_limits(now_epoch=200)
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=200,
+    )
     state = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert "codex_primary_used_percent" not in state
 
@@ -304,7 +325,11 @@ def test_refresh_codex_rate_limits_no_session_and_with_session(isolated_paths):
     current["weekly_limit_mode"] = "auto"
     ralph.USAGE_FILE.write_text(json.dumps(current), encoding="utf-8")
 
-    ralph.refresh_codex_rate_limits(now_epoch=300)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=300,
+    )
     updated = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
     assert updated["codex_primary_used_percent"] == 10.0
     assert updated["codex_secondary_used_percent"] == 2.0
@@ -329,19 +354,31 @@ def test_refresh_codex_rate_limits_no_session_and_with_session(isolated_paths):
         ),
         encoding="utf-8",
     )
-    ralph.refresh_codex_rate_limits(now_epoch=301)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=301,
+    )
 
 
 def test_refresh_codex_rate_limits_handles_missing_rate_and_open_error(isolated_paths, monkeypatch):
     ralph.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
     ralph.USAGE_FILE.write_text("{oops", encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=199)
-    ralph.ensure_usage_state(-1, now_epoch=100)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=199,
+    )
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     sessions = ralph.CODEX_SESSIONS_DIR
     sessions.mkdir(parents=True, exist_ok=True)
     bad = sessions / "rollout-bad.jsonl"
     bad.write_text(json.dumps({"payload": {"type": "token_count"}}), encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=200)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=200,
+    )
 
     good = sessions / "rollout-good.jsonl"
     good.write_text("", encoding="utf-8")
@@ -353,7 +390,11 @@ def test_refresh_codex_rate_limits_handles_missing_rate_and_open_error(isolated_
         if str(path_obj).endswith("rollout-good.jsonl")
         else original_open(path_obj, *a, **k),
     )
-    ralph.refresh_codex_rate_limits(now_epoch=201)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=201,
+    )
 
     weird = sessions / "x.jsonl"
     weird.write_text("{}", encoding="utf-8")
@@ -365,7 +406,11 @@ def test_refresh_codex_rate_limits_handles_missing_rate_and_open_error(isolated_
         if str(path_obj).endswith("x.jsonl")
         else stat_orig(path_obj, *a, **k),
     )
-    ralph.refresh_codex_rate_limits(now_epoch=202)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=202,
+    )
 
     line = sessions / "rollout-values.jsonl"
     line.write_text(
@@ -388,7 +433,11 @@ def test_refresh_codex_rate_limits_handles_missing_rate_and_open_error(isolated_
     state["last_secondary_used_percent"] = 1.0
     state["last_secondary_resets_at"] = 0
     ralph.USAGE_FILE.write_text(json.dumps(state), encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=203)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=203,
+    )
 
     estimate = sessions / "rollout-estimate.jsonl"
     estimate.write_text(
@@ -412,11 +461,15 @@ def test_refresh_codex_rate_limits_handles_missing_rate_and_open_error(isolated_
     state2["last_secondary_resets_at"] = 0
     state2["weekly_limit_estimates_seconds"] = "bad"
     ralph.USAGE_FILE.write_text(json.dumps(state2), encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=204)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=204,
+    )
 
 
 def test_refresh_codex_rate_limits_stat_error_and_payload_filter(isolated_paths, monkeypatch):
-    ralph.ensure_usage_state(-1, now_epoch=100)
+    ralph_usage.ensure_usage_state(-1, state_dir=ralph.STATE_DIR, usage_file=ralph.USAGE_FILE, now_epoch=100)
     sessions = ralph.CODEX_SESSIONS_DIR
     sessions.mkdir(parents=True, exist_ok=True)
 
@@ -430,16 +483,28 @@ def test_refresh_codex_rate_limits_stat_error_and_payload_filter(isolated_paths,
         if str(path_obj).endswith("rollout-staterr.jsonl")
         else stat_orig(path_obj, *a, **k),
     )
-    ralph.refresh_codex_rate_limits(now_epoch=201)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=201,
+    )
 
     monkeypatch.setattr(Path, "stat", stat_orig)
     payload_bad = sessions / "rollout-payloadbad.jsonl"
     payload_bad.write_text(json.dumps({"payload": "oops"}), encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=202)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=202,
+    )
 
     blank = sessions / "rollout-blank.jsonl"
     blank.write_text("\n", encoding="utf-8")
-    ralph.refresh_codex_rate_limits(now_epoch=203)
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=ralph.USAGE_FILE,
+        codex_sessions_dir=ralph.CODEX_SESSIONS_DIR,
+        now_epoch=203,
+    )
 
 
 def test_compute_usage_wait_seconds_paths():
@@ -455,7 +520,7 @@ def test_compute_usage_wait_seconds_paths():
         "codex_secondary_resets_at": 300,
         "segments": [[100, 180], [0, 20]],
     }
-    wait, reason = ralph.compute_usage_wait_seconds(state, now=150)
+    wait, reason = ralph_usage.compute_usage_wait_seconds(state, now=150)
     assert wait > 0
     assert "exhausted" in reason
 
@@ -467,7 +532,7 @@ def test_compute_usage_wait_seconds_paths():
         "weekly_limit_seconds": 10,
         "segments": [[0, 50]],
     }
-    wait2, reason2 = ralph.compute_usage_wait_seconds(state2, now=60)
+    wait2, reason2 = ralph_usage.compute_usage_wait_seconds(state2, now=60)
     assert wait2 >= 0
     assert isinstance(reason2, str)
 
@@ -479,7 +544,7 @@ def test_compute_usage_wait_seconds_paths():
         "weekly_limit_seconds": 10,
         "segments": [[0, 6], [1], ["x", 2]],
     }
-    wait3, reason3 = ralph.compute_usage_wait_seconds(state3, now=50)
+    wait3, reason3 = ralph_usage.compute_usage_wait_seconds(state3, now=50)
     assert wait3 > 0
     assert reason3 == "weekly pacing"
 
@@ -491,7 +556,7 @@ def test_compute_usage_wait_seconds_paths():
         "weekly_limit_seconds": 0,
         "segments": [],
     }
-    wait4, reason4 = ralph.compute_usage_wait_seconds(state4, now=50)
+    wait4, reason4 = ralph_usage.compute_usage_wait_seconds(state4, now=50)
     assert wait4 == 0
     assert isinstance(reason4, str)
 
@@ -505,11 +570,11 @@ def test_weekly_usage_metrics_and_quota_reserve_paths():
         "codex_secondary_resets_at": 1000,
         "segments": [[0, 1]],
     }
-    metrics = ralph.weekly_usage_metrics(telemetry_state, now=50)
+    metrics = ralph_usage.weekly_usage_metrics(telemetry_state, now=50)
     assert metrics["remaining_percent"] == 18.0
     assert metrics["remaining_percent_source"] == "telemetry"
 
-    wait, reason = ralph.compute_usage_wait_seconds(telemetry_state, now=50, weekly_quota_reserve_percent=20)
+    wait, reason = ralph_usage.compute_usage_wait_seconds(telemetry_state, now=50, weekly_quota_reserve_percent=20)
     assert wait == 950
     assert reason == "weekly reserve threshold reached"
 
@@ -519,15 +584,15 @@ def test_weekly_usage_metrics_and_quota_reserve_paths():
         "weekly_limit_seconds": 10,
         "segments": [[0, 8]],
     }
-    metrics2 = ralph.weekly_usage_metrics(computed_state, now=50)
+    metrics2 = ralph_usage.weekly_usage_metrics(computed_state, now=50)
     assert metrics2["remaining_percent"] == 20.0
     assert metrics2["remaining_percent_source"] == "computed"
 
-    wait2, reason2 = ralph.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=20)
+    wait2, reason2 = ralph_usage.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=20)
     assert wait2 == 50
     assert reason2 == "weekly reserve threshold reached"
 
-    wait3, reason3 = ralph.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=10)
+    wait3, reason3 = ralph_usage.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=10)
     assert wait3 > 0
     assert reason3 == "weekly pacing"
 
@@ -537,7 +602,7 @@ def test_weekly_usage_metrics_and_quota_reserve_paths():
         "weekly_limit_seconds": 0,
         "segments": [],
     }
-    wait4, reason4 = ralph.compute_usage_wait_seconds(no_quota_state, now=50, weekly_quota_reserve_percent=20)
+    wait4, reason4 = ralph_usage.compute_usage_wait_seconds(no_quota_state, now=50, weekly_quota_reserve_percent=20)
     assert wait4 == 0
     assert isinstance(reason4, str)
 
@@ -549,7 +614,7 @@ def test_weekly_usage_metrics_and_quota_reserve_paths():
         "codex_secondary_resets_at": 500,
         "segments": [[0, 1]],
     }
-    wait5, reason5 = ralph.compute_usage_wait_seconds(exhausted_state, now=50, weekly_quota_reserve_percent=0)
+    wait5, reason5 = ralph_usage.compute_usage_wait_seconds(exhausted_state, now=50, weekly_quota_reserve_percent=0)
     assert wait5 == 450
     assert reason5 == "weekly limit exhausted"
 
@@ -581,9 +646,14 @@ def test_enforce_usage_limits_sleeps_once(isolated_paths, capsys):
         return next(now_values)
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(ralph.time, "time", fake_time)
+    monkeypatch.setattr(ralph_usage.time, "time", fake_time)
     try:
-        ralph.enforce_usage_limits(fake_sleep)
+        ralph_usage.enforce_usage_limits(
+            usage_file=ralph.USAGE_FILE,
+            format_duration_hms=ralph.format_duration_hms,
+            format_resume_time=ralph.format_resume_time,
+            sleep_fn=fake_sleep,
+        )
     finally:
         monkeypatch.undo()
     assert calls
@@ -613,9 +683,15 @@ def test_enforce_usage_limits_reserve_threshold_message(isolated_paths, capsys):
         ralph.USAGE_FILE.write_text(json.dumps(updated), encoding="utf-8")
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(ralph.time, "time", lambda: 50)
+    monkeypatch.setattr(ralph_usage.time, "time", lambda: 50)
     try:
-        ralph.enforce_usage_limits(fake_sleep, weekly_quota_reserve_percent=20)
+        ralph_usage.enforce_usage_limits(
+            usage_file=ralph.USAGE_FILE,
+            format_duration_hms=ralph.format_duration_hms,
+            format_resume_time=ralph.format_resume_time,
+            sleep_fn=fake_sleep,
+            weekly_quota_reserve_percent=20,
+        )
     finally:
         monkeypatch.undo()
     assert calls == [50]
@@ -626,24 +702,29 @@ def test_enforce_usage_limits_reserve_threshold_message(isolated_paths, capsys):
 def test_enforce_usage_limits_handles_invalid_file(isolated_paths):
     ralph.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
     ralph.USAGE_FILE.write_text("{invalid", encoding="utf-8")
-    ralph.enforce_usage_limits(lambda _s: (_ for _ in ()).throw(RuntimeError("should not sleep")))
+    ralph_usage.enforce_usage_limits(
+        usage_file=ralph.USAGE_FILE,
+        format_duration_hms=ralph.format_duration_hms,
+        format_resume_time=ralph.format_resume_time,
+        sleep_fn=lambda _s: (_ for _ in ()).throw(RuntimeError("should not sleep")),
+    )
 
 
 def test_usage_limit_detection_and_wait_parse():
-    assert ralph.is_usage_limit_error("Too many requests; rate limit reached")
-    assert not ralph.is_usage_limit_error("plain failure")
-    assert ralph.parse_limit_wait_seconds("retry in 1h 2m") == 3720
-    assert ralph.parse_limit_wait_seconds("retry in 3m 5s") == 185
-    assert ralph.parse_limit_wait_seconds("retry in 8s") == 8
-    assert ralph.parse_limit_wait_seconds("no timing") == 300
+    assert ralph_usage.is_usage_limit_error("Too many requests; rate limit reached")
+    assert not ralph_usage.is_usage_limit_error("plain failure")
+    assert ralph_usage.parse_limit_wait_seconds("retry in 1h 2m") == 3720
+    assert ralph_usage.parse_limit_wait_seconds("retry in 3m 5s") == 185
+    assert ralph_usage.parse_limit_wait_seconds("retry in 8s") == 8
+    assert ralph_usage.parse_limit_wait_seconds("no timing") == 300
 
 
 def test_prompt_builders_and_markdown_table():
-    i_prompt = ralph.build_implementer_prompt("imp", "user", "DONE")
+    i_prompt = ralph_prompts.build_implementer_prompt("imp", "user", "DONE")
     assert "<ralph_user_prompt>" in i_prompt
     assert "<promise>DONE</promise>" in i_prompt
 
-    r_prompt = ralph.build_reviewer_prompt("rev", "user", "DONE", ["a.py"], "git ok")
+    r_prompt = ralph_prompts.build_reviewer_prompt("rev", "user", "DONE", ["a.py"], "git ok")
     assert "Overall status" in r_prompt
     assert "<promise>DONE</promise>" in r_prompt
     assert "Changed files from latest implementer pass" in r_prompt
@@ -660,13 +741,13 @@ def test_artifact_and_git_helpers(isolated_paths, monkeypatch):
     ralph.write_json_file(isolated_paths / "x" / "b.json", {"b": 1})
     assert json.loads((isolated_paths / "x" / "b.json").read_text(encoding="utf-8"))["b"] == 1
 
-    assert ralph.summarize_stderr("a" * 200).endswith("...")
-    assert ralph.classify_transient_failure("rate limit", 1) == "usage_limit"
-    assert ralph.classify_transient_failure("connection reset by peer", 1) == "network"
-    assert ralph.classify_transient_failure("fatal", -9) == "subprocess_interrupted"
-    assert ralph.classify_transient_failure("fatal", 1) is None
-    assert ralph.compute_backoff_delay(1, 0, 3) == 1
-    assert ralph.compute_backoff_delay(4, 2, 5) == 5
+    assert ralph_exec.summarize_stderr("a" * 200).endswith("...")
+    assert ralph_exec.classify_transient_failure("rate limit", 1) == "usage_limit"
+    assert ralph_exec.classify_transient_failure("connection reset by peer", 1) == "network"
+    assert ralph_exec.classify_transient_failure("fatal", -9) == "subprocess_interrupted"
+    assert ralph_exec.classify_transient_failure("fatal", 1) is None
+    assert ralph_exec.compute_backoff_delay(1, 0, 3) == 1
+    assert ralph_exec.compute_backoff_delay(4, 2, 5) == 5
 
     class Completed:
         def __init__(self, returncode, stdout="", stderr=""):
@@ -750,7 +831,7 @@ def test_artifact_and_git_helpers(isolated_paths, monkeypatch):
 
 def test_read_prompt_file_missing_raises(isolated_paths):
     with pytest.raises(ralph.RalphError):
-        ralph.read_prompt_file(Path("does-not-exist.md"))
+        ralph_prompts.read_prompt_file(Path("does-not-exist.md"))
 
 
 def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatch):
@@ -767,9 +848,8 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
         ralph.LAST_MESSAGE_FILE.write_text("ok <promise>DONE</promise>", encoding="utf-8")
         return ralph.CommandResult(returncode=0, stderr="")
 
-    monkeypatch.setattr(ralph, "run_codex_exec", fake_run)
-    monkeypatch.setattr(ralph.time, "time", lambda: 10)
-    result = ralph.run_with_retries(
+    monkeypatch.setattr(ralph_exec.time, "time", lambda: 10)
+    result = ralph_exec.run_with_retries(
         prompt="prompt",
         codex_args=["--model", "o3"],
         refresh_fn=fake_refresh,
@@ -778,6 +858,9 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
         max_transient_retries=3,
         initial_backoff_seconds=2,
         max_backoff_seconds=30,
+        run_codex_exec_fn=fake_run,
+        record_usage_segment_fn=lambda *_: None,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
     )
     assert "DONE" in result.message
     assert result.elapsed_seconds == 0
@@ -787,9 +870,8 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
     def fake_run_no_message(prompt, codex_args):
         return ralph.CommandResult(returncode=0, stderr="")
 
-    monkeypatch.setattr(ralph, "run_codex_exec", fake_run_no_message)
     with pytest.raises(ralph.RalphExecError, match="did not write"):
-        ralph.run_with_retries(
+        ralph_exec.run_with_retries(
             prompt="prompt",
             codex_args=[],
             refresh_fn=fake_refresh,
@@ -798,6 +880,9 @@ def test_run_with_retries_success_and_missing_message(isolated_paths, monkeypatc
             max_transient_retries=3,
             initial_backoff_seconds=2,
             max_backoff_seconds=30,
+            run_codex_exec_fn=fake_run_no_message,
+            record_usage_segment_fn=lambda *_: None,
+            last_message_file=ralph.LAST_MESSAGE_FILE,
         )
 
 
@@ -819,8 +904,7 @@ def test_run_with_retries_usage_retry_and_failure(isolated_paths, monkeypatch):
         return ralph.CommandResult(returncode=0, stderr="")
 
     slept = []
-    monkeypatch.setattr(ralph, "run_codex_exec", fake_run)
-    result = ralph.run_with_retries(
+    result = ralph_exec.run_with_retries(
         prompt="prompt",
         codex_args=[],
         refresh_fn=fake_refresh,
@@ -829,14 +913,16 @@ def test_run_with_retries_usage_retry_and_failure(isolated_paths, monkeypatch):
         max_transient_retries=3,
         initial_backoff_seconds=2,
         max_backoff_seconds=30,
+        run_codex_exec_fn=fake_run,
+        record_usage_segment_fn=lambda *_: None,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
     )
     assert "FAIL" in result.message
     assert slept == [2]
     assert result.retry_attempts[0].classification == "usage_limit"
 
-    monkeypatch.setattr(ralph, "run_codex_exec", lambda _p, _a: ralph.CommandResult(returncode=2, stderr="fatal"))
     with pytest.raises(ralph.RalphExecError, match="codex exec failed"):
-        ralph.run_with_retries(
+        ralph_exec.run_with_retries(
             prompt="prompt",
             codex_args=[],
             refresh_fn=fake_refresh,
@@ -845,6 +931,9 @@ def test_run_with_retries_usage_retry_and_failure(isolated_paths, monkeypatch):
             max_transient_retries=3,
             initial_backoff_seconds=2,
             max_backoff_seconds=30,
+            run_codex_exec_fn=lambda _p, _a: ralph.CommandResult(returncode=2, stderr="fatal"),
+            record_usage_segment_fn=lambda *_: None,
+            last_message_file=ralph.LAST_MESSAGE_FILE,
         )
 
 
@@ -855,14 +944,9 @@ def test_run_with_retries_transient_backoff_exhaustion(isolated_paths, monkeypat
     def fake_enforce():
         return None
 
-    monkeypatch.setattr(
-        ralph,
-        "run_codex_exec",
-        lambda _p, _a: ralph.CommandResult(returncode=1, stderr="connection reset by peer"),
-    )
     slept = []
     with pytest.raises(ralph.RalphExecError) as exc:
-        ralph.run_with_retries(
+        ralph_exec.run_with_retries(
             prompt="prompt",
             codex_args=[],
             refresh_fn=fake_refresh,
@@ -871,6 +955,9 @@ def test_run_with_retries_transient_backoff_exhaustion(isolated_paths, monkeypat
             max_transient_retries=1,
             initial_backoff_seconds=2,
             max_backoff_seconds=30,
+            run_codex_exec_fn=lambda _p, _a: ralph.CommandResult(returncode=1, stderr="connection reset by peer"),
+            record_usage_segment_fn=lambda *_: None,
+            last_message_file=ralph.LAST_MESSAGE_FILE,
         )
     assert slept == [2]
     assert exc.value.failure_reason == "transient_retry_exhausted:network"
@@ -1008,8 +1095,8 @@ def test_run_reviewer_once_paths(monkeypatch):
 
 def test_run_loop_success_and_retry_and_caps(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
-    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "ensure_usage_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
 
     printed = []
 
@@ -1092,8 +1179,8 @@ def test_run_loop_success_and_retry_and_caps(isolated_paths, monkeypatch):
 
 def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
-    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "ensure_usage_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
     monkeypatch.setattr(ralph, "write_state_file", lambda **_: None)
     rc = ralph.run_loop(
         ralph.LoopOptions(
@@ -1210,7 +1297,7 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
     assert ralph.cmd_status() == 0
     status_out = capsys.readouterr().out
     assert "Ralph loop active" in status_out
@@ -1300,10 +1387,10 @@ def test_parse_stdin_and_cmd_loop_and_main(isolated_paths, monkeypatch, capsys):
             return self._text
 
     monkeypatch.setattr(ralph.sys, "stdin", DummyStdin(True, ""))
-    assert ralph.parse_stdin_if_needed([]) is None
+    assert ralph_cli.parse_stdin_if_needed([], stdin=ralph.sys.stdin) is None
     monkeypatch.setattr(ralph.sys, "stdin", DummyStdin(False, "abc"))
-    assert ralph.parse_stdin_if_needed([]) == "abc"
-    assert ralph.parse_stdin_if_needed(["x"]) is None
+    assert ralph_cli.parse_stdin_if_needed([], stdin=ralph.sys.stdin) == "abc"
+    assert ralph_cli.parse_stdin_if_needed(["x"], stdin=ralph.sys.stdin) is None
 
     monkeypatch.setattr(ralph, "run_loop", lambda _opts, console: 0)
     assert ralph.cmd_loop(["prompt"], console=object()) == 0
@@ -1342,8 +1429,8 @@ def test_parse_stdin_and_cmd_loop_and_main(isolated_paths, monkeypatch, capsys):
 
 def test_run_loop_cancelled_after_inner(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
-    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "ensure_usage_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
     monkeypatch.setattr(
         ralph,
         "write_state_file",
@@ -1381,8 +1468,8 @@ def test_run_loop_cancelled_after_inner(isolated_paths, monkeypatch):
 
 def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
-    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "ensure_usage_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
     monkeypatch.setattr(
         ralph,
         "write_state_file",
@@ -1410,7 +1497,7 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
         seen_paths.append(str(path))
         return "agent prompt"
 
-    monkeypatch.setattr(ralph, "read_prompt_file", fake_read_prompt)
+    monkeypatch.setattr(ralph_prompts, "read_prompt_file", fake_read_prompt)
     rc = ralph.run_loop(
         ralph.LoopOptions(
             prompt="work",
@@ -1435,8 +1522,8 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
 
 def test_run_loop_writes_artifacts_and_handles_failure_paths(isolated_paths, monkeypatch):
     monkeypatch.setattr(ralph, "require_cmd", lambda _cmd: None)
-    monkeypatch.setattr(ralph, "ensure_usage_state", lambda *_: None)
-    monkeypatch.setattr(ralph, "refresh_codex_rate_limits", lambda: None)
+    monkeypatch.setattr(ralph_usage, "ensure_usage_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ralph_usage, "refresh_codex_rate_limits", lambda **_kwargs: None)
     monkeypatch.setattr(ralph, "print_inner_status_table", lambda *args, **kwargs: None)
     monkeypatch.setattr(ralph, "print_outer_status_table", lambda *args, **kwargs: None)
     monkeypatch.setattr(ralph, "generate_run_id", lambda now=None: "run-fixed")
@@ -1600,10 +1687,18 @@ def test_run_codex_exec_writes_err_file(isolated_paths, monkeypatch, capsys):
             self.map.clear()
 
     fake = FakeProcess("ok\n", "warn\n", 0)
-    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake)
-    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: FakeSelector())
+    monkeypatch.setattr(ralph_exec.subprocess, "Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(ralph_exec.selectors, "DefaultSelector", lambda: FakeSelector())
 
-    result = ralph.run_codex_exec("prompt", ["--model", "o3"])
+    result = ralph_exec.run_codex_exec(
+        "prompt",
+        ["--model", "o3"],
+        state_dir=ralph.STATE_DIR,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
+        err_file=ralph.ERR_FILE,
+        ansi_color_reset=ralph.ANSI_COLOR_RESET,
+        color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+    )
     assert result.returncode == 0
     assert ralph.ERR_FILE.read_text(encoding="utf-8") == "warn\n"
     captured = capsys.readouterr()
@@ -1613,8 +1708,16 @@ def test_run_codex_exec_writes_err_file(isolated_paths, monkeypatch, capsys):
 
     # Cover blank-line stdout branch and trailing stderr buffer branch.
     fake_empty = FakeProcess("\nX", "tail", 0)
-    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake_empty)
-    result2 = ralph.run_codex_exec("prompt", [])
+    monkeypatch.setattr(ralph_exec.subprocess, "Popen", lambda *args, **kwargs: fake_empty)
+    result2 = ralph_exec.run_codex_exec(
+        "prompt",
+        [],
+        state_dir=ralph.STATE_DIR,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
+        err_file=ralph.ERR_FILE,
+        ansi_color_reset=ralph.ANSI_COLOR_RESET,
+        color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+    )
     assert result2.stderr == "tail"
 
 
@@ -1642,7 +1745,7 @@ def test_run_codex_exec_keyboard_interrupt_terminates_process(isolated_paths, mo
         def wait(self, timeout=None):
             self.wait_count += 1
             if self.wait_count == 1:
-                raise ralph.subprocess.TimeoutExpired("codex", timeout)
+                raise ralph_exec.subprocess.TimeoutExpired("codex", timeout)
             return 130
 
         def poll(self):
@@ -1674,10 +1777,18 @@ def test_run_codex_exec_keyboard_interrupt_terminates_process(isolated_paths, mo
             self.map.clear()
 
     fake = FakeProcess()
-    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: fake)
-    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: InterruptSelector())
+    monkeypatch.setattr(ralph_exec.subprocess, "Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(ralph_exec.selectors, "DefaultSelector", lambda: InterruptSelector())
     with pytest.raises(ralph.RalphError, match="interrupted by user"):
-        ralph.run_codex_exec("prompt", [])
+        ralph_exec.run_codex_exec(
+            "prompt",
+            [],
+            state_dir=ralph.STATE_DIR,
+            last_message_file=ralph.LAST_MESSAGE_FILE,
+            err_file=ralph.ERR_FILE,
+            ansi_color_reset=ralph.ANSI_COLOR_RESET,
+            color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+        )
     assert fake.terminated
     assert fake.killed
 
@@ -1747,11 +1858,19 @@ def test_run_codex_exec_periodic_color_reset(isolated_paths, monkeypatch, capsys
             self.map.clear()
 
     monotonic_values = iter([0.0, 3.0, 3.1, 3.2, 3.3, 3.4, 3.5])
-    monkeypatch.setattr(ralph.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(ralph.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
-    monkeypatch.setattr(ralph.selectors, "DefaultSelector", lambda: StepSelector())
+    monkeypatch.setattr(ralph_exec.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(ralph_exec.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(ralph_exec.selectors, "DefaultSelector", lambda: StepSelector())
 
-    result = ralph.run_codex_exec("prompt", [])
+    result = ralph_exec.run_codex_exec(
+        "prompt",
+        [],
+        state_dir=ralph.STATE_DIR,
+        last_message_file=ralph.LAST_MESSAGE_FILE,
+        err_file=ralph.ERR_FILE,
+        ansi_color_reset=ralph.ANSI_COLOR_RESET,
+        color_reset_interval_seconds=ralph.COLOR_RESET_INTERVAL_SECONDS,
+    )
     assert result.returncode == 0
     captured = capsys.readouterr()
     assert ralph.ANSI_COLOR_RESET in captured.out or ralph.ANSI_COLOR_RESET in captured.err

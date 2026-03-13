@@ -9,21 +9,34 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
-import math
 import os
 import random
-import re
 import selectors
 import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
-from statistics import median
-from typing import Callable, Iterable
+from typing import Callable
 
 from rich.console import Console
 from rich.markdown import Markdown
+
+import ralph_cli
+import ralph_exec
+import ralph_prompts
+import ralph_usage
+from ralph_models import (
+    CommandResult,
+    ExecResult,
+    InnerLoopResult,
+    LoopOptions,
+    RalphError,
+    RalphExecError,
+    RetryAttempt,
+    ReviewerResult,
+    RunContext,
+)
 
 STATE_DIR = Path(".codex")
 STATE_FILE = STATE_DIR / "ralph-loop.local.md"
@@ -46,112 +59,6 @@ COLOR_RESET_INTERVAL_SECONDS = 2.0
 DEFAULT_MAX_TRANSIENT_RETRIES = 3
 DEFAULT_INITIAL_BACKOFF_SECONDS = 2
 DEFAULT_MAX_BACKOFF_SECONDS = 30
-
-
-class RalphError(RuntimeError):
-    """Raised when command execution should stop with a non-zero exit."""
-
-
-@dataclasses.dataclass(frozen=True)
-class LoopOptions:
-    """Parsed options for the loop command."""
-
-    prompt: str
-    implementer_prompt_path: str
-    reviewer_prompt_path: str
-    max_iterations: int
-    completion_promise: str
-    weekly_limit_hours: str
-    weekly_quota_reserve_percent: int
-    max_review_cycles: int
-    max_transient_retries: int
-    initial_backoff_seconds: int
-    max_backoff_seconds: int
-    codex_args: list[str]
-
-
-@dataclasses.dataclass(frozen=True)
-class CommandResult:
-    """Result from a command runner invocation."""
-
-    returncode: int
-    stderr: str
-    stdout: str = ""
-
-
-@dataclasses.dataclass(frozen=True)
-class RetryAttempt:
-    """Transient retry metadata for a single retry attempt."""
-
-    attempt_number: int
-    classification: str
-    delay_seconds: int
-    stderr_summary: str
-
-
-@dataclasses.dataclass(frozen=True)
-class ExecResult:
-    """Successful execution details for a codex invocation."""
-
-    message: str
-    elapsed_seconds: int
-    retry_attempts: tuple[RetryAttempt, ...] = ()
-    stderr: str = ""
-    returncode: int = 0
-
-
-@dataclasses.dataclass(frozen=True)
-class RunContext:
-    """Per-run artifact and git baseline context."""
-
-    run_id: str
-    run_dir: Path
-    baseline_commit: str | None
-    baseline_note: str | None
-
-
-class RalphExecError(RalphError):
-    """Execution failure with artifact-friendly metadata."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        failure_reason: str,
-        stderr: str = "",
-        retry_attempts: tuple[RetryAttempt, ...] = (),
-        elapsed_seconds: int = 0,
-    ) -> None:
-        super().__init__(message)
-        self.failure_reason = failure_reason
-        self.stderr = stderr
-        self.retry_attempts = retry_attempts
-        self.elapsed_seconds = elapsed_seconds
-
-
-@dataclasses.dataclass(frozen=True)
-class InnerLoopResult:
-    """Summary for an implementer inner loop."""
-
-    termination_reason: str
-    iterations_run: int
-    promise_matched: bool
-    elapsed_seconds: int
-    last_message_text: str = ""
-    retry_attempts: tuple[RetryAttempt, ...] = ()
-    last_stderr: str = ""
-
-
-@dataclasses.dataclass(frozen=True)
-class ReviewerResult:
-    """Summary for a reviewer pass."""
-
-    status: str
-    promise_matched: bool
-    elapsed_seconds: int
-    last_message_text: str = ""
-    retry_attempts: tuple[RetryAttempt, ...] = ()
-    last_stderr: str = ""
 
 
 def err(message: str) -> None:
@@ -179,64 +86,6 @@ def shutil_which(command: str) -> str | None:
     from shutil import which
 
     return which(command)
-
-
-def usage_text() -> str:
-    """Return top-level usage text."""
-
-    return """Ralph Wiggum for Codex
-
-Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
-  ralph cancel
-  ralph status
-  ralph help
-
-Notes:
-  - PROMPT is the user task request and can be omitted if provided via stdin.
-  - --prompt overrides the implementer prompt template file for loop passes.
-  - --reviewer-prompt overrides the reviewer prompt template file for outer review.
-  - If positional PROMPT and stdin are absent, --prompt file contents are used as PROMPT text.
-  - --weekly-quota-reserve preserves the last N% of weekly quota; 0 disables it.
-  - Ralph writes structured run artifacts under .codex/runs/<run_id>/.
-  - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
-"""
-
-
-def loop_help_text() -> str:
-    """Return loop subcommand help text."""
-
-    return """ralph loop
-
-Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
-
-Options:
-  --prompt PATH             Implementer prompt template file (default: SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md)
-  --reviewer-prompt PATH    Reviewer prompt template file (default: SPEC_FILES/smart_agents/3_SPEC_REVIEWER.md)
-  --max-iterations N        Max implementer iterations per inner loop (default: unlimited)
-  --completion-promise TEXT Promise phrase expected from implementer and reviewer (default: DONE)
-  --weekly-limit-hours N|auto
-                            Weekly runtime budget in hours, or auto-detect from Codex telemetry
-                            (default: $RALPH_WEEKLY_LIMIT_HOURS, or auto)
-  --weekly-quota-reserve N  Preserve the last N percent of weekly quota; 0 disables it
-                            (default: 0)
-  --max-review-cycles N     Max outer reviewer cycles before failing (default: 5; 0 means unlimited)
-  --max-transient-retries N Max transient codex exec retries (default: 3)
-  --initial-backoff-seconds N
-                            Initial transient retry backoff in seconds (default: 2)
-  --max-backoff-seconds N   Max transient retry backoff in seconds (default: 30)
-  -h, --help                Show this help
-
-Notes:
-  - PROMPT is the user task request and can be provided via stdin if omitted.
-  - If PROMPT and stdin are omitted, --prompt file contents become the PROMPT text.
-  - Reviewer prompts include changed file paths from the latest implementer pass when git is available.
-  - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
-  - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
-  - Weekly quota reserve is a hard lower bound and does not replace normal weekly pacing.
-  - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
-"""
 
 
 def now_iso_utc() -> str:
@@ -466,57 +315,6 @@ def write_run_manifest(
     )
 
 
-def summarize_stderr(stderr_text: str, limit: int = 160) -> str:
-    """Build a compact single-line stderr summary."""
-
-    summary = " ".join(stderr_text.split())
-    if len(summary) <= limit:
-        return summary
-    return summary[: limit - 3] + "..."
-
-
-def classify_transient_failure(stderr_text: str, returncode: int) -> str | None:
-    """Classify a transient execution failure."""
-
-    if is_usage_limit_error(stderr_text):
-        return "usage_limit"
-
-    haystack = stderr_text.lower()
-    network_patterns = [
-        r"timed?\s*out",
-        r"timeout",
-        r"connection reset",
-        r"connection refused",
-        r"connection aborted",
-        r"temporary failure",
-        r"temporarily unavailable",
-        r"broken pipe",
-        r"network is unreachable",
-        r"name or service not known",
-        r"nodename nor servname provided",
-        r"could not resolve",
-        r"dns",
-        r"eai_again",
-        r"tls",
-        r"ssl",
-        r"socket hang up",
-    ]
-    if any(re.search(pattern, haystack) for pattern in network_patterns):
-        return "network"
-    if returncode < 0:
-        return "subprocess_interrupted"
-    return None
-
-
-def compute_backoff_delay(attempt_number: int, initial_backoff_seconds: int, max_backoff_seconds: int) -> int:
-    """Compute capped exponential backoff delay for the next retry."""
-
-    initial = max(1, initial_backoff_seconds)
-    maximum = max(initial, max_backoff_seconds)
-    delay = initial * (2 ** max(0, attempt_number - 1))
-    return min(delay, maximum)
-
-
 def detect_git_baseline(repo_root: Path) -> tuple[str | None, str | None]:
     """Detect baseline commit for diff-aware review."""
 
@@ -577,598 +375,22 @@ def write_exec_artifacts(
     write_json_file(cycle_dir / f"{prefix}_result.json", result_payload)
 
 
-def extract_promise_text(text: str) -> str | None:
-    """Extract the final <promise> tag text if present."""
-
-    matches = re.findall(r"<promise>(.*?)</promise>", text, flags=re.DOTALL)
-    if not matches:
-        return None
-    return " ".join(matches[-1].split())
-
-
-def extract_promise_text_from_file(path: Path) -> str | None:
-    """Extract promise text from a message file."""
-
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    return extract_promise_text(text)
-
-
-def parse_review_status(text: str) -> str | None:
-    """Parse reviewer overall status from REVIEW.md-like output."""
-
-    match = re.search(r"Overall status:\s*(PASS WITH NITS|PASS|FAIL)\b", text, flags=re.IGNORECASE)
-    if not match:
-        return None
-    return match.group(1).upper()
-
-
-def ensure_usage_state(weekly_limit_seconds: int, now_epoch: int | None = None) -> None:
-    """Ensure usage budget state file exists and is normalized."""
-
-    now = int(time.time() if now_epoch is None else now_epoch)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-
-    state: dict[str, object] = {}
-    if USAGE_FILE.exists():
-        try:
-            state = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            state = {}
-
-    epoch = int(state.get("epoch", now))
-    segments = state.get("segments", [])
-    max_keep_start = now - max(FIVE_HOUR_WINDOW_SECONDS, WEEK_WINDOW_SECONDS)
-
-    clean: list[list[int]] = []
-    if isinstance(segments, list):
-        for item in segments:
-            if not (isinstance(item, list) and len(item) == 2):
-                continue
-            try:
-                start = int(item[0])
-                end = int(item[1])
-            except Exception:
-                continue
-            if end <= start or end <= max_keep_start:
-                continue
-            clean.append([start, end])
-
-    if weekly_limit_seconds < 0:
-        weekly_limit = int(state.get("weekly_limit_seconds", 0))
-        weekly_mode = "auto"
-    else:
-        weekly_limit = weekly_limit_seconds
-        weekly_mode = "manual"
-
-    updated = {
-        "version": 1,
-        "epoch": epoch,
-        "five_hour_limit_seconds": DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
-        "five_hour_window_seconds": FIVE_HOUR_WINDOW_SECONDS,
-        "weekly_limit_seconds": weekly_limit,
-        "weekly_window_seconds": WEEK_WINDOW_SECONDS,
-        "weekly_limit_mode": weekly_mode,
-        "segments": clean,
-    }
-    USAGE_FILE.write_text(json.dumps(updated, separators=(",", ":")), encoding="utf-8")
-
-
-def refresh_codex_rate_limits(now_epoch: int | None = None) -> None:
-    """Refresh usage state from latest Codex session telemetry if available."""
-
-    now = int(time.time() if now_epoch is None else now_epoch)
-    state: dict[str, object] = {}
-    if USAGE_FILE.exists():
-        try:
-            state = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            state = {}
-
-    latest_path: Path | None = None
-    latest_mtime = -1.0
-    if CODEX_SESSIONS_DIR.is_dir():
-        for path in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
-            if "rollout-" not in path.name:
-                continue
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-                latest_path = path
-
-    if latest_path is None:
-        USAGE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
-        return
-
-    last_rate: dict[str, object] | None = None
-    try:
-        with latest_path.open("r", encoding="utf-8", errors="ignore") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except Exception:
-                    continue
-                payload = item.get("payload")
-                if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                    continue
-                rate = payload.get("rate_limits")
-                if isinstance(rate, dict) and "primary" in rate and "secondary" in rate:
-                    last_rate = rate
-    except Exception:
-        last_rate = None
-
-    if last_rate is None:
-        USAGE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
-        return
-
-    primary = last_rate.get("primary") or {}
-    secondary = last_rate.get("secondary") or {}
-
-    def safe_float(value: object, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except Exception:
-            return default
-
-    def safe_int(value: object, default: int) -> int:
-        try:
-            return int(value)
-        except Exception:
-            return default
-
-    p_used = safe_float(getattr(primary, "get", lambda *_: 0.0)("used_percent", 0.0))
-    s_used = safe_float(getattr(secondary, "get", lambda *_: 0.0)("used_percent", 0.0))
-    p_window = safe_int(getattr(primary, "get", lambda *_: 300)("window_minutes", 300), int(state.get("five_hour_window_seconds", FIVE_HOUR_WINDOW_SECONDS))) * 60
-    s_window = safe_int(getattr(secondary, "get", lambda *_: 10080)("window_minutes", 10080), int(state.get("weekly_window_seconds", WEEK_WINDOW_SECONDS))) * 60
-    p_reset = safe_int(getattr(primary, "get", lambda *_: 0)("resets_at", 0), 0)
-    s_reset = safe_int(getattr(secondary, "get", lambda *_: 0)("resets_at", 0), 0)
-
-    state["five_hour_window_seconds"] = p_window
-    state["weekly_window_seconds"] = s_window
-    state["codex_primary_used_percent"] = p_used
-    state["codex_secondary_used_percent"] = s_used
-    state["codex_primary_resets_at"] = p_reset
-    state["codex_secondary_resets_at"] = s_reset
-    state["codex_rate_observed_at"] = now
-
-    mode = str(state.get("weekly_limit_mode", "auto"))
-    five_limit_seconds = int(state.get("five_hour_limit_seconds", DEFAULT_FIVE_HOUR_LIMIT_SECONDS))
-
-    prev_p = state.get("last_primary_used_percent")
-    prev_s = state.get("last_secondary_used_percent")
-    prev_reset = int(state.get("last_secondary_resets_at", 0))
-
-    if (
-        mode == "auto"
-        and isinstance(prev_p, (int, float))
-        and isinstance(prev_s, (int, float))
-        and prev_reset == s_reset
-    ):
-        dp = p_used - float(prev_p)
-        ds = s_used - float(prev_s)
-        if dp >= 0.25 and ds >= 0.02:
-            estimate = five_limit_seconds * (dp / ds)
-            if 6 * 60 * 60 <= estimate <= 14 * 24 * 60 * 60:
-                estimates = state.get("weekly_limit_estimates_seconds", [])
-                if not isinstance(estimates, list):
-                    estimates = []
-                estimates.append(int(round(estimate)))
-                estimates = estimates[-24:]
-                state["weekly_limit_estimates_seconds"] = estimates
-                state["weekly_limit_seconds"] = int(round(median(estimates)))
-
-    state["last_primary_used_percent"] = p_used
-    state["last_secondary_used_percent"] = s_used
-    state["last_secondary_resets_at"] = s_reset
-    state["last_rate_sample_at"] = now
-
-    USAGE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
-
-
-def _overlap_sum(segments: Iterable[object], start: int, end: int) -> int:
-    total = 0
-    for item in segments:
-        if not (isinstance(item, list) and len(item) == 2):
-            continue
-        try:
-            segment_start = int(item[0])
-            segment_end = int(item[1])
-        except Exception:
-            continue
-        if segment_end <= start or segment_start >= end:
-            continue
-        total += max(0, min(segment_end, end) - max(segment_start, start))
-    return total
-
-
-def weekly_usage_metrics(state: dict[str, object], now: int) -> dict[str, object]:
-    """Derive weekly usage metrics from telemetry and local runtime state."""
-
-    epoch = int(state.get("epoch", now))
-    week_window = int(state.get("weekly_window_seconds", WEEK_WINDOW_SECONDS))
-    week_limit = int(state.get("weekly_limit_seconds", 0))
-    secondary_reset = int(state.get("codex_secondary_resets_at", 0))
-    secondary_pct = state.get("codex_secondary_used_percent")
-    segments = state.get("segments", [])
-
-    if secondary_reset > now:
-        week_end = secondary_reset
-        week_start = week_end - week_window
-    else:
-        week_period = (now - epoch) // week_window if week_window > 0 else 0
-        week_start = epoch + week_period * week_window
-        week_end = week_start + week_window
-
-    used_week = _overlap_sum(segments if isinstance(segments, list) else [], week_start, week_end)
-    telemetry_remaining_percent: float | None = None
-    if isinstance(secondary_pct, (int, float)):
-        telemetry_remaining_percent = max(0.0, 100.0 - float(secondary_pct))
-
-    computed_remaining_percent: float | None = None
-    if week_limit > 0:
-        computed_remaining_percent = max(0.0, 100.0 - ((used_week / week_limit) * 100.0))
-
-    remaining_percent = telemetry_remaining_percent
-    remaining_percent_source = "telemetry" if telemetry_remaining_percent is not None else ""
-    if remaining_percent is None and computed_remaining_percent is not None:
-        remaining_percent = computed_remaining_percent
-        remaining_percent_source = "computed"
-
-    return {
-        "computed_remaining_percent": computed_remaining_percent,
-        "remaining_percent": remaining_percent,
-        "remaining_percent_source": remaining_percent_source,
-        "secondary_reset": secondary_reset,
-        "used_week": used_week,
-        "week_end": week_end,
-        "week_limit": week_limit,
-        "week_start": week_start,
-        "week_window": week_window,
-    }
-
-
-def compute_usage_wait_seconds(
-    state: dict[str, object],
-    now: int,
-    weekly_quota_reserve_percent: int = 0,
-) -> tuple[int, str]:
-    """Compute throttling wait seconds from current usage state."""
-
-    epoch = int(state.get("epoch", now))
-    five_window = int(state.get("five_hour_window_seconds", FIVE_HOUR_WINDOW_SECONDS))
-    five_limit = int(state.get("five_hour_limit_seconds", DEFAULT_FIVE_HOUR_LIMIT_SECONDS))
-    primary_used_pct = float(state.get("codex_primary_used_percent", -1.0))
-    secondary_used_pct = float(state.get("codex_secondary_used_percent", -1.0))
-    primary_resets_at = int(state.get("codex_primary_resets_at", 0))
-    segments = state.get("segments", [])
-
-    wait_for = 0
-    reason = "budget"
-
-    if five_limit > 0 and five_window > 0:
-        if primary_resets_at > now:
-            five_end = primary_resets_at
-            five_start = five_end - five_window
-        else:
-            five_period = (now - epoch) // five_window
-            five_start = epoch + five_period * five_window
-            five_end = five_start + five_window
-        used_five = _overlap_sum(segments if isinstance(segments, list) else [], five_start, five_end)
-        if used_five >= five_limit:
-            wait_for = max(wait_for, five_end - now)
-            reason = "5h budget exhausted"
-        if primary_used_pct >= 99.5 and primary_resets_at > now:
-            wait_for = max(wait_for, primary_resets_at - now)
-            reason = "5h limit exhausted"
-
-    weekly_metrics = weekly_usage_metrics(state, now)
-    week_limit = int(weekly_metrics["week_limit"])
-    week_window = int(weekly_metrics["week_window"])
-    week_start = int(weekly_metrics["week_start"])
-    week_end = int(weekly_metrics["week_end"])
-    used_week = int(weekly_metrics["used_week"])
-    remaining_percent = weekly_metrics["remaining_percent"]
-
-    if week_limit > 0 and week_window > 0:
-        elapsed = max(0, now - week_start)
-        if (
-            weekly_quota_reserve_percent > 0
-            and remaining_percent is not None
-            and remaining_percent <= float(weekly_quota_reserve_percent)
-        ):
-            reserve_wait = max(0, week_end - now)
-            if reserve_wait > wait_for or wait_for == 0:
-                wait_for = reserve_wait
-                reason = "weekly reserve threshold reached"
-        if used_week >= week_limit:
-            weekly_wait = max(0, week_end - now)
-            if weekly_wait > wait_for:
-                wait_for = weekly_wait
-                reason = "weekly budget exhausted"
-        else:
-            target = (week_limit * elapsed) / week_window
-            if used_week > target and week_limit > 0:
-                next_ok = week_start + math.ceil((used_week * week_window) / week_limit)
-                if next_ok > now:
-                    pacing_wait = next_ok - now
-                    if pacing_wait > wait_for:
-                        wait_for = pacing_wait
-                        reason = "weekly pacing"
-        secondary_resets_at = int(weekly_metrics["secondary_reset"])
-        if secondary_used_pct >= 99.5 and secondary_resets_at > now:
-            telemetry_wait = secondary_resets_at - now
-            if telemetry_wait > wait_for:
-                wait_for = telemetry_wait
-                reason = "weekly limit exhausted"
-
-    return wait_for, reason
-
-
-def enforce_usage_limits(
-    sleep_fn: Callable[[int], None] = time.sleep,
-    *,
-    weekly_quota_reserve_percent: int = 0,
-) -> None:
-    """Block until current usage budgets allow execution."""
-
-    while True:
-        now = int(time.time())
-        try:
-            state = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        wait_seconds, reason = compute_usage_wait_seconds(
-            state,
-            now,
-            weekly_quota_reserve_percent=weekly_quota_reserve_percent,
-        )
-        if wait_seconds <= 0:
-            return
-        print(
-            "Ralph throttling:"
-            f" {reason}. Sleeping {format_duration_hms(wait_seconds)}."
-            f" Planned resume: {format_resume_time(now, wait_seconds)}."
-        )
-        sleep_fn(wait_seconds)
-
-
-def record_usage_segment(start_epoch: int, end_epoch: int, now_epoch: int | None = None) -> None:
-    """Record execution segment into usage state."""
-
-    if end_epoch <= start_epoch:
-        return
-    now = int(time.time() if now_epoch is None else now_epoch)
-
-    state: dict[str, object] = {}
-    if USAGE_FILE.exists():
-        try:
-            state = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            state = {}
-
-    segments = state.get("segments", [])
-    if not isinstance(segments, list):
-        segments = []
-    segments.append([start_epoch, end_epoch])
-
-    max_keep = now - max(
-        int(state.get("five_hour_window_seconds", FIVE_HOUR_WINDOW_SECONDS)),
-        int(state.get("weekly_window_seconds", WEEK_WINDOW_SECONDS)),
-    )
-
-    clean: list[list[int]] = []
-    for item in segments:
-        if not (isinstance(item, list) and len(item) == 2):
-            continue
-        try:
-            start = int(item[0])
-            end = int(item[1])
-        except Exception:
-            continue
-        if end <= start or end <= max_keep:
-            continue
-        clean.append([start, end])
-
-    state["segments"] = clean
-    USAGE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
-
-
-def is_usage_limit_error(stderr_text: str) -> bool:
-    """Return True when stderr text indicates a usage/rate limit condition."""
-
-    haystack = stderr_text.lower()
-    patterns = [
-        r"usage limit",
-        r"rate limit",
-        r"quota",
-        r"too many requests",
-        r"limit.*reached",
-        r"limit.*exceeded",
-    ]
-    return any(re.search(pattern, haystack) for pattern in patterns)
-
-
-def parse_limit_wait_seconds(stderr_text: str) -> int:
-    """Best-effort parse of retry delay from error text."""
-
-    text = stderr_text.lower()
-    best = 0
-    for match in re.finditer(r"(\d+)\s*h(?:ours?)?\s*(\d+)?\s*m?(?:in(?:utes?)?)?", text):
-        hours = int(match.group(1))
-        minutes = int(match.group(2) or 0)
-        best = max(best, hours * 3600 + minutes * 60)
-    for match in re.finditer(r"(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)?\s*s(?:ec(?:ond)?s?)?", text):
-        minutes = int(match.group(1))
-        seconds = int(match.group(2) or 0)
-        best = max(best, minutes * 60 + seconds)
-    for match in re.finditer(r"(\d+)\s*s(?:ec(?:ond)?s?)?", text):
-        best = max(best, int(match.group(1)))
-    return best if best > 0 else 300
-
-
-def read_prompt_file(path: Path) -> str:
-    """Read an agent prompt file with strict validation."""
-
-    if not path.exists():
-        raise RalphError(f"Prompt file not found: {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def build_implementer_prompt(agent_prompt: str, user_prompt: str, completion_promise: str) -> str:
-    """Compose implementer prompt payload."""
-
-    parts = [agent_prompt.rstrip(), "", "<ralph_user_prompt>", user_prompt.strip(), "</ralph_user_prompt>"]
-    parts.extend(
-        [
-            "",
-            "<ralph_completion_promise>",
-            "When and only when all requested work for this loop is complete, emit exactly this tag on its own line:",
-            f"<promise>{completion_promise}</promise>",
-            "Do not emit that exact tag before completion.",
-            "</ralph_completion_promise>",
-        ]
-    )
-    return "\n".join(parts).strip() + "\n"
-
-
-def build_reviewer_prompt(
-    agent_prompt: str,
-    user_prompt: str,
-    completion_promise: str,
-    changed_files: list[str] | None = None,
-    changed_files_note: str | None = None,
-) -> str:
-    """Compose reviewer prompt payload with deterministic completion requirement."""
-
-    parts = [agent_prompt.rstrip(), "", "<ralph_user_prompt>", user_prompt.strip(), "</ralph_user_prompt>"]
-    parts.extend(
-        [
-            "",
-            "<ralph_changed_files>",
-            "Changed files from latest implementer pass:",
-        ]
-    )
-    if changed_files_note:
-        parts.append(f"NOTE: {changed_files_note}")
-    if changed_files:
-        parts.extend(changed_files)
-    else:
-        parts.append("NONE")
-    parts.append("</ralph_changed_files>")
-    parts.extend(
-        [
-            "",
-            "<ralph_reviewer_completion_contract>",
-            "You MUST output `Overall status: PASS` or `Overall status: PASS WITH NITS` only when implementation is satisfactory.",
-            "If and only if you output one of those satisfied statuses, emit this exact tag on its own line:",
-            f"<promise>{completion_promise}</promise>",
-            "If status is FAIL, do not emit the promise tag.",
-            "</ralph_reviewer_completion_contract>",
-        ]
-    )
-    return "\n".join(parts).strip() + "\n"
-
-
 def run_codex_exec(prompt: str, codex_args: list[str]) -> CommandResult:
     """Execute a codex run, stream output live, and capture stderr for retry logic."""
 
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    command = ["codex", "exec", *codex_args, "--output-last-message", str(LAST_MESSAGE_FILE)]
-    print("Ralph: starting codex exec...")
-
-    stderr_parts: list[str] = []
-    stdout_parts: list[str] = []
-    stdout_buffer = ""
-    stderr_buffer = ""
-    process: subprocess.Popen[str] | None = None
-    selector: selectors.BaseSelector | None = None
-    last_color_reset = time.monotonic()
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        if process.stdin is not None:
-            process.stdin.write(prompt)
-            process.stdin.close()
-
-        selector = selectors.DefaultSelector()
-        if process.stdout is not None:
-            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        if process.stderr is not None:
-            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-
-        while selector.get_map():
-            events = selector.select(timeout=0.2)
-            for key, _ in events:
-                chunk = key.fileobj.read(1)
-                stream_name = key.data
-                if chunk == "":
-                    selector.unregister(key.fileobj)
-                    continue
-                if stream_name == "stdout":
-                    sys.stdout.write(chunk)
-                    sys.stdout.flush()
-                    stdout_buffer += chunk
-                    stdout_parts.append(chunk)
-                    while "\n" in stdout_buffer:
-                        line, stdout_buffer = stdout_buffer.split("\n", 1)
-                        if line.strip() == "":
-                            continue
-                else:
-                    sys.stderr.write(chunk)
-                    sys.stderr.flush()
-                    stderr_buffer += chunk
-                    while "\n" in stderr_buffer:
-                        line, stderr_buffer = stderr_buffer.split("\n", 1)
-                        stderr_parts.append(line + "\n")
-            now = time.monotonic()
-            if now - last_color_reset >= COLOR_RESET_INTERVAL_SECONDS:
-                # Guard against child ANSI state leaks by periodically resetting terminal colors.
-                sys.stdout.write(ANSI_COLOR_RESET)
-                sys.stdout.flush()
-                sys.stderr.write(ANSI_COLOR_RESET)
-                sys.stderr.flush()
-                last_color_reset = now
-
-        if stdout_buffer:
-            if stdout_buffer.strip():
-                pass
-        if stderr_buffer:
-            stderr_parts.append(stderr_buffer)
-
-        returncode = process.wait()
-        stderr_text = "".join(stderr_parts)
-        ERR_FILE.write_text(stderr_text, encoding="utf-8")
-        return CommandResult(returncode=returncode, stderr=stderr_text, stdout="".join(stdout_parts))
-    except KeyboardInterrupt as exc:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
-        raise RalphError("Ralph interrupted by user during codex exec") from exc
-    finally:
-        sys.stdout.write(ANSI_COLOR_RESET)
-        sys.stdout.flush()
-        sys.stderr.write(ANSI_COLOR_RESET)
-        sys.stderr.flush()
-        if selector is not None:
-            selector.close()
+    return ralph_exec.run_codex_exec(
+        prompt,
+        codex_args,
+        state_dir=STATE_DIR,
+        last_message_file=LAST_MESSAGE_FILE,
+        err_file=ERR_FILE,
+        ansi_color_reset=ANSI_COLOR_RESET,
+        color_reset_interval_seconds=COLOR_RESET_INTERVAL_SECONDS,
+        popen_module=subprocess,
+        selectors_module=selectors,
+        time_module=time,
+        sys_module=sys,
+    )
 
 
 def run_with_retries(
@@ -1184,71 +406,31 @@ def run_with_retries(
 ) -> ExecResult:
     """Run codex with transient retries and return execution details."""
 
-    retry_attempts: list[RetryAttempt] = []
-    last_stderr = ""
-    while True:
-        refresh_fn()
-        enforce_fn()
-        started_epoch = int(time.time())
-        result = run_codex_exec(prompt, codex_args)
-        ended_epoch = int(time.time())
-        elapsed_seconds = max(0, ended_epoch - started_epoch)
-        last_stderr = result.stderr
-
-        if result.returncode == 0:
-            record_usage_segment(started_epoch, ended_epoch)
-            refresh_fn()
-            if not LAST_MESSAGE_FILE.exists():
-                raise RalphExecError(
-                    "codex exec did not write last message file",
-                    failure_reason="missing_last_message",
-                    stderr=result.stderr,
-                    retry_attempts=tuple(retry_attempts),
-                    elapsed_seconds=elapsed_seconds,
-                )
-            message = LAST_MESSAGE_FILE.read_text(encoding="utf-8", errors="ignore")
-            return ExecResult(
-                message=message,
-                elapsed_seconds=elapsed_seconds,
-                retry_attempts=tuple(retry_attempts),
-                stderr=result.stderr,
-                returncode=result.returncode,
-            )
-
-        refresh_fn()
-        classification = classify_transient_failure(result.stderr, result.returncode)
-        if classification is not None and len(retry_attempts) < max_transient_retries:
-            if classification == "usage_limit":
-                wait_seconds = parse_limit_wait_seconds(result.stderr)
-                warn(f"codex usage limit reached; sleeping {wait_seconds}s before retry")
-            else:
-                wait_seconds = compute_backoff_delay(
-                    len(retry_attempts) + 1,
-                    initial_backoff_seconds,
-                    max_backoff_seconds,
-                )
-                warn(f"transient codex failure ({classification}); sleeping {wait_seconds}s before retry")
-            retry_attempts.append(
-                RetryAttempt(
-                    attempt_number=len(retry_attempts) + 1,
-                    classification=classification,
-                    delay_seconds=wait_seconds,
-                    stderr_summary=summarize_stderr(result.stderr),
-                )
-            )
-            sleep_fn(wait_seconds)
-            continue
-
-        failure_reason = "codex_exec_failed"
-        if classification is not None and len(retry_attempts) >= max_transient_retries:
-            failure_reason = f"transient_retry_exhausted:{classification}"
-        raise RalphExecError(
-            "codex exec failed",
-            failure_reason=failure_reason,
-            stderr=last_stderr,
-            retry_attempts=tuple(retry_attempts),
-            elapsed_seconds=elapsed_seconds,
-        )
+    return ralph_exec.run_with_retries(
+        prompt=prompt,
+        codex_args=codex_args,
+        refresh_fn=refresh_fn,
+        enforce_fn=enforce_fn,
+        sleep_fn=sleep_fn,
+        max_transient_retries=max_transient_retries,
+        initial_backoff_seconds=initial_backoff_seconds,
+        max_backoff_seconds=max_backoff_seconds,
+        run_codex_exec_fn=run_codex_exec,
+        record_usage_segment_fn=lambda start_epoch, end_epoch: ralph_usage.record_usage_segment(
+            start_epoch,
+            end_epoch,
+            usage_file=USAGE_FILE,
+            five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+            week_window_seconds=WEEK_WINDOW_SECONDS,
+        ),
+        last_message_file=LAST_MESSAGE_FILE,
+        time_module=time,
+        classify_transient_failure_fn=ralph_exec.classify_transient_failure,
+        parse_limit_wait_seconds_fn=ralph_usage.parse_limit_wait_seconds,
+        compute_backoff_delay_fn=ralph_exec.compute_backoff_delay,
+        summarize_stderr_fn=ralph_exec.summarize_stderr,
+        warn_fn=warn,
+    )
 
 
 def markdown_table(headers: list[str], values: list[str]) -> str:
@@ -1293,153 +475,6 @@ def print_outer_status_table(console: Console, *, review_cycle: int, result: Rev
     console.print(Markdown("### Outer Loop Status\n\n" + table))
 
 
-def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
-    """Parse loop command arguments without argparse to preserve passthrough behavior."""
-
-    max_iterations = 0
-    completion_promise = "DONE"
-    weekly_limit_hours = os.environ.get("RALPH_WEEKLY_LIMIT_HOURS", "auto")
-    weekly_quota_reserve_percent = 0
-    max_review_cycles = 5
-    max_transient_retries = DEFAULT_MAX_TRANSIENT_RETRIES
-    initial_backoff_seconds = DEFAULT_INITIAL_BACKOFF_SECONDS
-    max_backoff_seconds = DEFAULT_MAX_BACKOFF_SECONDS
-    implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
-    reviewer_prompt_path = str(DEFAULT_REVIEWER_PROMPT_FILE)
-    prompt_option_path: str | None = None
-    prompt_parts: list[str] = []
-    codex_args: list[str] = []
-
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if token in {"-h", "--help"}:
-            print(loop_help_text())
-            raise SystemExit(0)
-        if token == "--":
-            codex_args = args[index + 1 :]
-            break
-        if token == "--max-iterations":
-            if index + 1 >= len(args):
-                raise RalphError("--max-iterations requires a number")
-            if not re.fullmatch(r"\d+", args[index + 1]):
-                raise RalphError("--max-iterations must be a non-negative integer")
-            max_iterations = int(args[index + 1])
-            index += 2
-            continue
-        if token == "--completion-promise":
-            if index + 1 >= len(args):
-                raise RalphError("--completion-promise requires a value")
-            completion_promise = args[index + 1]
-            index += 2
-            continue
-        if token == "--prompt":
-            if index + 1 >= len(args):
-                raise RalphError("--prompt requires a file path")
-            prompt_option_path = args[index + 1]
-            implementer_prompt_path = prompt_option_path
-            index += 2
-            continue
-        if token == "--reviewer-prompt":
-            if index + 1 >= len(args):
-                raise RalphError("--reviewer-prompt requires a file path")
-            reviewer_prompt_path = args[index + 1]
-            index += 2
-            continue
-        if token == "--weekly-limit-hours":
-            if index + 1 >= len(args):
-                raise RalphError("--weekly-limit-hours requires a number")
-            candidate = args[index + 1]
-            if not (candidate == "auto" or re.fullmatch(r"\d+", candidate)):
-                raise RalphError("--weekly-limit-hours must be 'auto' or a non-negative integer")
-            weekly_limit_hours = candidate
-            index += 2
-            continue
-        if token == "--weekly-quota-reserve":
-            if index + 1 >= len(args):
-                raise RalphError("--weekly-quota-reserve requires a number")
-            candidate = args[index + 1]
-            if not re.fullmatch(r"\d+", candidate):
-                raise RalphError("--weekly-quota-reserve must be an integer between 0 and 100")
-            reserve = int(candidate)
-            if reserve > 100:
-                raise RalphError("--weekly-quota-reserve must be between 0 and 100")
-            weekly_quota_reserve_percent = reserve
-            index += 2
-            continue
-        if token == "--max-review-cycles":
-            if index + 1 >= len(args):
-                raise RalphError("--max-review-cycles requires a number")
-            candidate = args[index + 1]
-            if not re.fullmatch(r"\d+", candidate):
-                raise RalphError("--max-review-cycles must be a non-negative integer")
-            max_review_cycles = int(candidate)
-            index += 2
-            continue
-        if token == "--max-transient-retries":
-            if index + 1 >= len(args):
-                raise RalphError("--max-transient-retries requires a number")
-            candidate = args[index + 1]
-            if not re.fullmatch(r"\d+", candidate):
-                raise RalphError("--max-transient-retries must be a non-negative integer")
-            max_transient_retries = int(candidate)
-            index += 2
-            continue
-        if token == "--initial-backoff-seconds":
-            if index + 1 >= len(args):
-                raise RalphError("--initial-backoff-seconds requires a number")
-            candidate = args[index + 1]
-            if not re.fullmatch(r"\d+", candidate):
-                raise RalphError("--initial-backoff-seconds must be a non-negative integer")
-            initial_backoff_seconds = int(candidate)
-            index += 2
-            continue
-        if token == "--max-backoff-seconds":
-            if index + 1 >= len(args):
-                raise RalphError("--max-backoff-seconds requires a number")
-            candidate = args[index + 1]
-            if not re.fullmatch(r"\d+", candidate):
-                raise RalphError("--max-backoff-seconds must be a non-negative integer")
-            max_backoff_seconds = int(candidate)
-            index += 2
-            continue
-
-        prompt_parts.append(token)
-        index += 1
-
-    prompt = " ".join(prompt_parts).strip()
-    if not prompt and stdin_text is not None:
-        prompt = stdin_text
-    if not prompt and prompt_option_path is not None:
-        # Allow --prompt to provide user prompt text when positional/stdin prompt is omitted.
-        prompt = read_prompt_file(Path(prompt_option_path))
-        implementer_prompt_path = str(DEFAULT_IMPLEMENTER_PROMPT_FILE)
-    if not prompt:
-        raise RalphError("No prompt provided (pass PROMPT args or pipe via stdin)")
-
-    for arg in codex_args:
-        if arg in {"--output-last-message", "-o"}:
-            raise RalphError("Do not pass --output-last-message/-o; Ralph uses it internally")
-
-    if not (weekly_limit_hours == "auto" or re.fullmatch(r"\d+", weekly_limit_hours)):
-        raise RalphError("RALPH_WEEKLY_LIMIT_HOURS must be 'auto' or a non-negative integer")
-
-    return LoopOptions(
-        prompt=prompt,
-        implementer_prompt_path=implementer_prompt_path,
-        reviewer_prompt_path=reviewer_prompt_path,
-        max_iterations=max_iterations,
-        completion_promise=completion_promise,
-        weekly_limit_hours=weekly_limit_hours,
-        weekly_quota_reserve_percent=weekly_quota_reserve_percent,
-        max_review_cycles=max_review_cycles,
-        max_transient_retries=max_transient_retries,
-        initial_backoff_seconds=initial_backoff_seconds,
-        max_backoff_seconds=max_backoff_seconds,
-        codex_args=codex_args,
-    )
-
-
 def run_inner_loop(
     *,
     loop_prompt: str,
@@ -1482,7 +517,7 @@ def run_inner_loop(
         last_stderr = exec_result.stderr
         all_retry_attempts.extend(exec_result.retry_attempts)
 
-        promise_text = extract_promise_text(exec_result.message)
+        promise_text = ralph_prompts.extract_promise_text(exec_result.message)
         if promise_text == completion_promise:
             return InnerLoopResult(
                 termination_reason="completion_promise",
@@ -1535,10 +570,10 @@ def run_reviewer_once(
         initial_backoff_seconds=initial_backoff_seconds,
         max_backoff_seconds=max_backoff_seconds,
     )
-    status = parse_review_status(exec_result.message)
+    status = ralph_prompts.parse_review_status(exec_result.message)
     if status is None:
         raise RalphError("reviewer output missing 'Overall status' line")
-    promise_text = extract_promise_text(exec_result.message)
+    promise_text = ralph_prompts.extract_promise_text(exec_result.message)
     return ReviewerResult(
         status=status,
         promise_matched=promise_text == completion_promise,
@@ -1575,13 +610,31 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
         final_outcome="running",
     )
 
-    ensure_usage_state(weekly_limit_seconds)
-    refresh_codex_rate_limits()
-    enforce_limits = lambda: enforce_usage_limits(weekly_quota_reserve_percent=options.weekly_quota_reserve_percent)
+    ralph_usage.ensure_usage_state(
+        weekly_limit_seconds,
+        state_dir=STATE_DIR,
+        usage_file=USAGE_FILE,
+        default_five_hour_limit_seconds=DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
+        five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+        week_window_seconds=WEEK_WINDOW_SECONDS,
+    )
+    ralph_usage.refresh_codex_rate_limits(
+        usage_file=USAGE_FILE,
+        codex_sessions_dir=CODEX_SESSIONS_DIR,
+        default_five_hour_limit_seconds=DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
+        five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+        week_window_seconds=WEEK_WINDOW_SECONDS,
+    )
+    enforce_limits = lambda: ralph_usage.enforce_usage_limits(
+        usage_file=USAGE_FILE,
+        format_duration_hms=format_duration_hms,
+        format_resume_time=format_resume_time,
+        weekly_quota_reserve_percent=options.weekly_quota_reserve_percent,
+    )
 
-    implementer_agent_prompt = read_prompt_file(Path(options.implementer_prompt_path))
-    reviewer_agent_prompt = read_prompt_file(Path(options.reviewer_prompt_path))
-    implementer_prompt = build_implementer_prompt(
+    implementer_agent_prompt = ralph_prompts.read_prompt_file(Path(options.implementer_prompt_path))
+    reviewer_agent_prompt = ralph_prompts.read_prompt_file(Path(options.reviewer_prompt_path))
+    implementer_prompt = ralph_prompts.build_implementer_prompt(
         implementer_agent_prompt,
         options.prompt,
         options.completion_promise,
@@ -1609,7 +662,13 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
                     codex_args=options.codex_args,
                     completion_promise=options.completion_promise,
                     max_iterations=options.max_iterations,
-                    refresh_fn=refresh_codex_rate_limits,
+                    refresh_fn=lambda: ralph_usage.refresh_codex_rate_limits(
+                        usage_file=USAGE_FILE,
+                        codex_sessions_dir=CODEX_SESSIONS_DIR,
+                        default_five_hour_limit_seconds=DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
+                        five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+                        week_window_seconds=WEEK_WINDOW_SECONDS,
+                    ),
                     enforce_fn=enforce_limits,
                     sleep_fn=sleep_fn,
                     max_transient_retries=options.max_transient_retries,
@@ -1678,7 +737,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
                 print("Ralph loop cancelled.")
                 return 0
 
-            reviewer_prompt = build_reviewer_prompt(
+            reviewer_prompt = ralph_prompts.build_reviewer_prompt(
                 reviewer_agent_prompt,
                 options.prompt,
                 options.completion_promise,
@@ -1690,7 +749,13 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
                     reviewer_prompt=reviewer_prompt,
                     codex_args=options.codex_args,
                     completion_promise=options.completion_promise,
-                    refresh_fn=refresh_codex_rate_limits,
+                    refresh_fn=lambda: ralph_usage.refresh_codex_rate_limits(
+                        usage_file=USAGE_FILE,
+                        codex_sessions_dir=CODEX_SESSIONS_DIR,
+                        default_five_hour_limit_seconds=DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
+                        five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+                        week_window_seconds=WEEK_WINDOW_SECONDS,
+                    ),
                     enforce_fn=enforce_limits,
                     sleep_fn=sleep_fn,
                     max_transient_retries=options.max_transient_retries,
@@ -1877,14 +942,14 @@ def usage_summary_lines() -> list[str]:
         five_start = epoch + five_period * five_window
         five_end = five_start + five_window
 
-    used_five = _overlap_sum(segments if isinstance(segments, list) else [], five_start, five_end)
+    used_five = ralph_usage._overlap_sum(segments if isinstance(segments, list) else [], five_start, five_end)
 
     lines = [f"  5h_usage: {used_five}s / {five_limit}s"]
     if isinstance(primary_pct, (int, float)):
         lines.append(f"  5h_usage_percent: {float(primary_pct):.1f}%")
 
     if week_limit > 0:
-        weekly_metrics = weekly_usage_metrics(state, now)
+        weekly_metrics = ralph_usage.weekly_usage_metrics(state, now, week_window_seconds=WEEK_WINDOW_SECONDS)
         used_week = int(weekly_metrics["used_week"])
         lines.append(f"  weekly_usage: {used_week}s / {week_limit}s")
         lines.append(f"  weekly_mode: {week_mode}")
@@ -1896,7 +961,7 @@ def usage_summary_lines() -> list[str]:
     if isinstance(secondary_pct, (int, float)):
         lines.append(f"  weekly_usage_percent: {float(secondary_pct):.1f}%")
 
-    weekly_metrics = weekly_usage_metrics(state, now)
+    weekly_metrics = ralph_usage.weekly_usage_metrics(state, now, week_window_seconds=WEEK_WINDOW_SECONDS)
     remaining_percent = weekly_metrics["remaining_percent"]
     remaining_source = str(weekly_metrics["remaining_percent_source"])
     if isinstance(remaining_percent, (int, float)):
@@ -1917,7 +982,13 @@ def cmd_status() -> int:
         print("No active Ralph loop found.")
         return 0
     if USAGE_FILE.exists():
-        refresh_codex_rate_limits()
+        ralph_usage.refresh_codex_rate_limits(
+            usage_file=USAGE_FILE,
+            codex_sessions_dir=CODEX_SESSIONS_DIR,
+            default_five_hour_limit_seconds=DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
+            five_hour_window_seconds=FIVE_HOUR_WINDOW_SECONDS,
+            week_window_seconds=WEEK_WINDOW_SECONDS,
+        )
 
     iteration = read_frontmatter_value(STATE_FILE, "iteration")
     review_cycle = read_frontmatter_value(STATE_FILE, "review_cycle")
@@ -1950,21 +1021,20 @@ def cmd_status() -> int:
     return 0
 
 
-def parse_stdin_if_needed(args: list[str]) -> str | None:
-    """Read stdin when prompt args are absent and stdin is piped."""
-
-    if args:
-        return None
-    if sys.stdin.isatty():
-        return None
-    return sys.stdin.read()
-
-
 def cmd_loop(args: list[str], *, console: Console) -> int:
     """Handle the loop subcommand."""
 
-    stdin_text = parse_stdin_if_needed(args)
-    options = parse_loop_args(args, stdin_text)
+    stdin_text = ralph_cli.parse_stdin_if_needed(args, stdin=sys.stdin)
+    options = ralph_cli.parse_loop_args(
+        args,
+        stdin_text,
+        default_implementer_prompt_file=DEFAULT_IMPLEMENTER_PROMPT_FILE,
+        default_reviewer_prompt_file=DEFAULT_REVIEWER_PROMPT_FILE,
+        default_max_transient_retries=DEFAULT_MAX_TRANSIENT_RETRIES,
+        default_initial_backoff_seconds=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        default_max_backoff_seconds=DEFAULT_MAX_BACKOFF_SECONDS,
+        read_prompt_file=ralph_prompts.read_prompt_file,
+    )
     return run_loop(options, console=console)
 
 
@@ -1976,7 +1046,7 @@ def main(argv: list[str] | None = None) -> int:
     rest = args[1:] if args else []
 
     if command in {"help", "-h", "--help"}:
-        print(usage_text())
+        print(ralph_cli.usage_text())
         return 0
 
     if command in {"loop", "start"}:
@@ -1989,5 +1059,5 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status()
 
     err(f"Unknown command: {command}")
-    print(usage_text())
+    print(ralph_cli.usage_text())
     return 1
