@@ -33,6 +33,8 @@ def isolated_paths(tmp_path, monkeypatch):
 def test_usage_text_and_loop_help_contains_new_options():
     assert "--max-review-cycles" in ralph.usage_text()
     assert "--max-review-cycles" in ralph.loop_help_text()
+    assert "--weekly-quota-reserve" in ralph.usage_text()
+    assert "--weekly-quota-reserve" in ralph.loop_help_text()
     assert "--prompt PATH" in ralph.usage_text()
     assert "--reviewer-prompt PATH" in ralph.loop_help_text()
     assert "--prompt file contents are used as PROMPT text" in ralph.usage_text()
@@ -53,6 +55,7 @@ def test_frontmatter_parse_decode_and_update(isolated_paths):
         prompt="hello",
         max_iterations=2,
         max_review_cycles=3,
+        weekly_quota_reserve_percent=20,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
         run_id="run-1",
@@ -60,6 +63,7 @@ def test_frontmatter_parse_decode_and_update(isolated_paths):
     )
     assert ralph.read_frontmatter_value(ralph.STATE_FILE, "iteration") == "1"
     assert ralph.read_frontmatter_value(ralph.STATE_FILE, "completion_promise") == "DONE"
+    assert ralph.read_frontmatter_value(ralph.STATE_FILE, "weekly_quota_reserve_percent") == "20"
     assert ralph.read_frontmatter_value(ralph.STATE_FILE, "missing") == ""
 
     ralph.update_state_value("iteration", 7)
@@ -125,6 +129,8 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
             "review.md",
             "--weekly-limit-hours",
             "3",
+            "--weekly-quota-reserve",
+            "20",
             "--max-review-cycles",
             "4",
             "--max-transient-retries",
@@ -145,6 +151,7 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     assert opts.implementer_prompt_path == "impl.md"
     assert opts.reviewer_prompt_path == "review.md"
     assert opts.weekly_limit_hours == "3"
+    assert opts.weekly_quota_reserve_percent == 20
     assert opts.max_review_cycles == 4
     assert opts.max_transient_retries == 6
     assert opts.initial_backoff_seconds == 7
@@ -156,6 +163,7 @@ def test_parse_loop_args_happy_and_stdin(monkeypatch):
     monkeypatch.setenv("RALPH_WEEKLY_LIMIT_HOURS", "8")
     opts3 = ralph.parse_loop_args(["p"], None)
     assert opts3.weekly_limit_hours == "8"
+    assert opts3.weekly_quota_reserve_percent == 0
     assert opts3.implementer_prompt_path == str(ralph.DEFAULT_IMPLEMENTER_PROMPT_FILE)
     assert opts3.reviewer_prompt_path == str(ralph.DEFAULT_REVIEWER_PROMPT_FILE)
     assert opts3.max_transient_retries == ralph.DEFAULT_MAX_TRANSIENT_RETRIES
@@ -188,6 +196,9 @@ def test_parse_loop_args_uses_prompt_file_when_prompt_omitted(tmp_path):
         (["--weekly-limit-hours", "x"], None, "must be 'auto'"),
         (["--max-review-cycles"], None, "requires a number"),
         (["--max-review-cycles", "x"], None, "non-negative integer"),
+        (["--weekly-quota-reserve"], None, "requires a number"),
+        (["--weekly-quota-reserve", "abc"], None, "between 0 and 100"),
+        (["--weekly-quota-reserve", "101"], None, "between 0 and 100"),
         (["--max-transient-retries"], None, "requires a number"),
         (["--max-transient-retries", "x"], None, "non-negative integer"),
         (["--initial-backoff-seconds"], None, "requires a number"),
@@ -485,6 +496,64 @@ def test_compute_usage_wait_seconds_paths():
     assert isinstance(reason4, str)
 
 
+def test_weekly_usage_metrics_and_quota_reserve_paths():
+    telemetry_state = {
+        "epoch": 0,
+        "weekly_window_seconds": 100,
+        "weekly_limit_seconds": 10,
+        "codex_secondary_used_percent": 82.0,
+        "codex_secondary_resets_at": 1000,
+        "segments": [[0, 1]],
+    }
+    metrics = ralph.weekly_usage_metrics(telemetry_state, now=50)
+    assert metrics["remaining_percent"] == 18.0
+    assert metrics["remaining_percent_source"] == "telemetry"
+
+    wait, reason = ralph.compute_usage_wait_seconds(telemetry_state, now=50, weekly_quota_reserve_percent=20)
+    assert wait == 950
+    assert reason == "weekly reserve threshold reached"
+
+    computed_state = {
+        "epoch": 0,
+        "weekly_window_seconds": 100,
+        "weekly_limit_seconds": 10,
+        "segments": [[0, 8]],
+    }
+    metrics2 = ralph.weekly_usage_metrics(computed_state, now=50)
+    assert metrics2["remaining_percent"] == 20.0
+    assert metrics2["remaining_percent_source"] == "computed"
+
+    wait2, reason2 = ralph.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=20)
+    assert wait2 == 50
+    assert reason2 == "weekly reserve threshold reached"
+
+    wait3, reason3 = ralph.compute_usage_wait_seconds(computed_state, now=50, weekly_quota_reserve_percent=10)
+    assert wait3 > 0
+    assert reason3 == "weekly pacing"
+
+    no_quota_state = {
+        "epoch": 0,
+        "weekly_window_seconds": 100,
+        "weekly_limit_seconds": 0,
+        "segments": [],
+    }
+    wait4, reason4 = ralph.compute_usage_wait_seconds(no_quota_state, now=50, weekly_quota_reserve_percent=20)
+    assert wait4 == 0
+    assert isinstance(reason4, str)
+
+    exhausted_state = {
+        "epoch": 0,
+        "weekly_window_seconds": 100,
+        "weekly_limit_seconds": 10,
+        "codex_secondary_used_percent": 100.0,
+        "codex_secondary_resets_at": 500,
+        "segments": [[0, 1]],
+    }
+    wait5, reason5 = ralph.compute_usage_wait_seconds(exhausted_state, now=50, weekly_quota_reserve_percent=0)
+    assert wait5 == 450
+    assert reason5 == "weekly limit exhausted"
+
+
 def test_enforce_usage_limits_sleeps_once(isolated_paths, capsys):
     state = {
         "epoch": 0,
@@ -521,6 +590,37 @@ def test_enforce_usage_limits_sleeps_once(isolated_paths, capsys):
     output = capsys.readouterr().out
     assert "Sleeping 0h 0m 10s" in output
     assert "Planned resume:" in output
+
+
+def test_enforce_usage_limits_reserve_threshold_message(isolated_paths, capsys):
+    state = {
+        "epoch": 0,
+        "weekly_window_seconds": 100,
+        "weekly_limit_seconds": 10,
+        "codex_secondary_used_percent": 85.0,
+        "codex_secondary_resets_at": 100,
+        "segments": [],
+    }
+    ralph.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ralph.USAGE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+    calls = []
+
+    def fake_sleep(seconds):
+        calls.append(seconds)
+        updated = json.loads(ralph.USAGE_FILE.read_text(encoding="utf-8"))
+        updated["codex_secondary_used_percent"] = 10.0
+        ralph.USAGE_FILE.write_text(json.dumps(updated), encoding="utf-8")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ralph.time, "time", lambda: 50)
+    try:
+        ralph.enforce_usage_limits(fake_sleep, weekly_quota_reserve_percent=20)
+    finally:
+        monkeypatch.undo()
+    assert calls == [50]
+    output = capsys.readouterr().out
+    assert "weekly reserve threshold reached" in output
 
 
 def test_enforce_usage_limits_handles_invalid_file(isolated_paths):
@@ -614,6 +714,7 @@ def test_artifact_and_git_helpers(isolated_paths, monkeypatch):
         2,
         "DONE",
         "auto",
+        0,
         5,
         3,
         2,
@@ -937,6 +1038,7 @@ def test_run_loop_success_and_retry_and_caps(isolated_paths, monkeypatch):
         max_iterations=2,
         completion_promise="DONE",
         weekly_limit_hours="auto",
+        weekly_quota_reserve_percent=0,
         max_review_cycles=5,
         max_transient_retries=3,
         initial_backoff_seconds=2,
@@ -1001,6 +1103,7 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
             1,
             "DONE",
             "auto",
+            0,
             1,
             3,
             2,
@@ -1030,6 +1133,7 @@ def test_run_loop_cancel_paths(isolated_paths, monkeypatch):
             1,
             "DONE",
             "auto",
+            0,
             1,
             3,
             2,
@@ -1050,6 +1154,7 @@ def dataclasses_replace(options, **kwargs):
         "max_iterations": options.max_iterations,
         "completion_promise": options.completion_promise,
         "weekly_limit_hours": options.weekly_limit_hours,
+        "weekly_quota_reserve_percent": options.weekly_quota_reserve_percent,
         "max_review_cycles": options.max_review_cycles,
         "max_transient_retries": options.max_transient_retries,
         "initial_backoff_seconds": options.initial_backoff_seconds,
@@ -1068,6 +1173,7 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
         prompt="hello",
         max_iterations=2,
         max_review_cycles=3,
+        weekly_quota_reserve_percent=20,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
         run_id="run-1",
@@ -1083,6 +1189,7 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
         prompt="hello",
         max_iterations=2,
         max_review_cycles=3,
+        weekly_quota_reserve_percent=20,
         completion_promise="DONE",
         codex_args_serialized="--model o3",
         run_id="run-2",
@@ -1107,6 +1214,7 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
     assert ralph.cmd_status() == 0
     status_out = capsys.readouterr().out
     assert "Ralph loop active" in status_out
+    assert "weekly_quota_reserve_percent: 20" in status_out
     assert "weekly_usage: disabled" in status_out
     lines = ralph.usage_summary_lines()
     assert any("5h_usage" in line for line in lines)
@@ -1136,6 +1244,8 @@ def test_cancel_status_and_usage_summary(isolated_paths, monkeypatch, capsys):
     assert any("weekly_usage" in line for line in lines2)
     assert any("5h_usage_percent" in line for line in lines2)
     assert any("weekly_usage_percent" in line for line in lines2)
+    assert any("weekly_remaining_percent" in line for line in lines2)
+    assert any("weekly_quota_reserve_percent: 20" in line for line in lines2)
 
     ralph.USAGE_FILE.write_text(
         json.dumps(
@@ -1220,6 +1330,7 @@ def test_parse_stdin_and_cmd_loop_and_main(isolated_paths, monkeypatch, capsys):
         prompt="hello",
         max_iterations=2,
         max_review_cycles=3,
+        weekly_quota_reserve_percent=20,
         completion_promise="DONE",
         codex_args_serialized="",
         run_id="run-3",
@@ -1255,6 +1366,7 @@ def test_run_loop_cancelled_after_inner(isolated_paths, monkeypatch):
             1,
             "DONE",
             "auto",
+            0,
             2,
             3,
             2,
@@ -1307,6 +1419,7 @@ def test_run_loop_uses_overridden_prompt_paths(isolated_paths, monkeypatch):
             max_iterations=1,
             completion_promise="DONE",
             weekly_limit_hours="auto",
+            weekly_quota_reserve_percent=0,
             max_review_cycles=1,
             max_transient_retries=3,
             initial_backoff_seconds=2,
@@ -1337,6 +1450,7 @@ def test_run_loop_writes_artifacts_and_handles_failure_paths(isolated_paths, mon
         max_iterations=1,
         completion_promise="DONE",
         weekly_limit_hours="auto",
+        weekly_quota_reserve_percent=0,
         max_review_cycles=1,
         max_transient_retries=3,
         initial_backoff_seconds=2,

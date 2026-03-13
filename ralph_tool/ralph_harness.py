@@ -62,6 +62,7 @@ class LoopOptions:
     max_iterations: int
     completion_promise: str
     weekly_limit_hours: str
+    weekly_quota_reserve_percent: int
     max_review_cycles: int
     max_transient_retries: int
     initial_backoff_seconds: int
@@ -186,7 +187,7 @@ def usage_text() -> str:
     return """Ralph Wiggum for Codex
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
   ralph cancel
   ralph status
   ralph help
@@ -196,6 +197,7 @@ Notes:
   - --prompt overrides the implementer prompt template file for loop passes.
   - --reviewer-prompt overrides the reviewer prompt template file for outer review.
   - If positional PROMPT and stdin are absent, --prompt file contents are used as PROMPT text.
+  - --weekly-quota-reserve preserves the last N% of weekly quota; 0 disables it.
   - Ralph writes structured run artifacts under .codex/runs/<run_id>/.
   - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
 """
@@ -207,7 +209,7 @@ def loop_help_text() -> str:
     return """ralph loop
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
 
 Options:
   --prompt PATH             Implementer prompt template file (default: SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md)
@@ -217,6 +219,8 @@ Options:
   --weekly-limit-hours N|auto
                             Weekly runtime budget in hours, or auto-detect from Codex telemetry
                             (default: $RALPH_WEEKLY_LIMIT_HOURS, or auto)
+  --weekly-quota-reserve N  Preserve the last N percent of weekly quota; 0 disables it
+                            (default: 0)
   --max-review-cycles N     Max outer reviewer cycles before failing (default: 5; 0 means unlimited)
   --max-transient-retries N Max transient codex exec retries (default: 3)
   --initial-backoff-seconds N
@@ -230,6 +234,7 @@ Notes:
   - Reviewer prompts include changed file paths from the latest implementer pass when git is available.
   - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
   - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
+  - Weekly quota reserve is a hard lower bound and does not replace normal weekly pacing.
   - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
 """
 
@@ -319,6 +324,7 @@ def write_state_file(
     prompt: str,
     max_iterations: int,
     max_review_cycles: int,
+    weekly_quota_reserve_percent: int,
     completion_promise: str,
     codex_args_serialized: str,
     run_id: str = "",
@@ -333,6 +339,7 @@ def write_state_file(
         "review_cycle": 1,
         "max_iterations": max_iterations,
         "max_review_cycles": max_review_cycles,
+        "weekly_quota_reserve_percent": weekly_quota_reserve_percent,
         "completion_promise": completion_promise or None,
         "codex_args": codex_args_serialized or None,
         "run_id": run_id or None,
@@ -431,6 +438,7 @@ def run_manifest_payload(
         "run_id": run_context.run_id,
         "started_at": read_frontmatter_value(STATE_FILE, "started_at"),
         "weekly_limit_hours": options.weekly_limit_hours,
+        "weekly_quota_reserve_percent": options.weekly_quota_reserve_percent,
     }
 
 
@@ -780,18 +788,65 @@ def _overlap_sum(segments: Iterable[object], start: int, end: int) -> int:
     return total
 
 
-def compute_usage_wait_seconds(state: dict[str, object], now: int) -> tuple[int, str]:
+def weekly_usage_metrics(state: dict[str, object], now: int) -> dict[str, object]:
+    """Derive weekly usage metrics from telemetry and local runtime state."""
+
+    epoch = int(state.get("epoch", now))
+    week_window = int(state.get("weekly_window_seconds", WEEK_WINDOW_SECONDS))
+    week_limit = int(state.get("weekly_limit_seconds", 0))
+    secondary_reset = int(state.get("codex_secondary_resets_at", 0))
+    secondary_pct = state.get("codex_secondary_used_percent")
+    segments = state.get("segments", [])
+
+    if secondary_reset > now:
+        week_end = secondary_reset
+        week_start = week_end - week_window
+    else:
+        week_period = (now - epoch) // week_window if week_window > 0 else 0
+        week_start = epoch + week_period * week_window
+        week_end = week_start + week_window
+
+    used_week = _overlap_sum(segments if isinstance(segments, list) else [], week_start, week_end)
+    telemetry_remaining_percent: float | None = None
+    if isinstance(secondary_pct, (int, float)):
+        telemetry_remaining_percent = max(0.0, 100.0 - float(secondary_pct))
+
+    computed_remaining_percent: float | None = None
+    if week_limit > 0:
+        computed_remaining_percent = max(0.0, 100.0 - ((used_week / week_limit) * 100.0))
+
+    remaining_percent = telemetry_remaining_percent
+    remaining_percent_source = "telemetry" if telemetry_remaining_percent is not None else ""
+    if remaining_percent is None and computed_remaining_percent is not None:
+        remaining_percent = computed_remaining_percent
+        remaining_percent_source = "computed"
+
+    return {
+        "computed_remaining_percent": computed_remaining_percent,
+        "remaining_percent": remaining_percent,
+        "remaining_percent_source": remaining_percent_source,
+        "secondary_reset": secondary_reset,
+        "used_week": used_week,
+        "week_end": week_end,
+        "week_limit": week_limit,
+        "week_start": week_start,
+        "week_window": week_window,
+    }
+
+
+def compute_usage_wait_seconds(
+    state: dict[str, object],
+    now: int,
+    weekly_quota_reserve_percent: int = 0,
+) -> tuple[int, str]:
     """Compute throttling wait seconds from current usage state."""
 
     epoch = int(state.get("epoch", now))
     five_window = int(state.get("five_hour_window_seconds", FIVE_HOUR_WINDOW_SECONDS))
     five_limit = int(state.get("five_hour_limit_seconds", DEFAULT_FIVE_HOUR_LIMIT_SECONDS))
-    week_window = int(state.get("weekly_window_seconds", WEEK_WINDOW_SECONDS))
-    week_limit = int(state.get("weekly_limit_seconds", 0))
     primary_used_pct = float(state.get("codex_primary_used_percent", -1.0))
     secondary_used_pct = float(state.get("codex_secondary_used_percent", -1.0))
     primary_resets_at = int(state.get("codex_primary_resets_at", 0))
-    secondary_resets_at = int(state.get("codex_secondary_resets_at", 0))
     segments = state.get("segments", [])
 
     wait_for = 0
@@ -813,34 +868,54 @@ def compute_usage_wait_seconds(state: dict[str, object], now: int) -> tuple[int,
             wait_for = max(wait_for, primary_resets_at - now)
             reason = "5h limit exhausted"
 
+    weekly_metrics = weekly_usage_metrics(state, now)
+    week_limit = int(weekly_metrics["week_limit"])
+    week_window = int(weekly_metrics["week_window"])
+    week_start = int(weekly_metrics["week_start"])
+    week_end = int(weekly_metrics["week_end"])
+    used_week = int(weekly_metrics["used_week"])
+    remaining_percent = weekly_metrics["remaining_percent"]
+
     if week_limit > 0 and week_window > 0:
-        if secondary_resets_at > now:
-            week_end = secondary_resets_at
-            week_start = week_end - week_window
-        else:
-            week_period = (now - epoch) // week_window
-            week_start = epoch + week_period * week_window
-            week_end = week_start + week_window
-        used_week = _overlap_sum(segments if isinstance(segments, list) else [], week_start, week_end)
         elapsed = max(0, now - week_start)
+        if (
+            weekly_quota_reserve_percent > 0
+            and remaining_percent is not None
+            and remaining_percent <= float(weekly_quota_reserve_percent)
+        ):
+            reserve_wait = max(0, week_end - now)
+            if reserve_wait > wait_for or wait_for == 0:
+                wait_for = reserve_wait
+                reason = "weekly reserve threshold reached"
         if used_week >= week_limit:
-            wait_for = max(wait_for, week_end - now)
-            reason = "weekly budget exhausted"
+            weekly_wait = max(0, week_end - now)
+            if weekly_wait > wait_for:
+                wait_for = weekly_wait
+                reason = "weekly budget exhausted"
         else:
             target = (week_limit * elapsed) / week_window
             if used_week > target and week_limit > 0:
                 next_ok = week_start + math.ceil((used_week * week_window) / week_limit)
                 if next_ok > now:
-                    wait_for = max(wait_for, next_ok - now)
-                    reason = "weekly pacing"
+                    pacing_wait = next_ok - now
+                    if pacing_wait > wait_for:
+                        wait_for = pacing_wait
+                        reason = "weekly pacing"
+        secondary_resets_at = int(weekly_metrics["secondary_reset"])
         if secondary_used_pct >= 99.5 and secondary_resets_at > now:
-            wait_for = max(wait_for, secondary_resets_at - now)
-            reason = "weekly limit exhausted"
+            telemetry_wait = secondary_resets_at - now
+            if telemetry_wait > wait_for:
+                wait_for = telemetry_wait
+                reason = "weekly limit exhausted"
 
     return wait_for, reason
 
 
-def enforce_usage_limits(sleep_fn: Callable[[int], None] = time.sleep) -> None:
+def enforce_usage_limits(
+    sleep_fn: Callable[[int], None] = time.sleep,
+    *,
+    weekly_quota_reserve_percent: int = 0,
+) -> None:
     """Block until current usage budgets allow execution."""
 
     while True:
@@ -850,7 +925,11 @@ def enforce_usage_limits(sleep_fn: Callable[[int], None] = time.sleep) -> None:
         except Exception:
             return
 
-        wait_seconds, reason = compute_usage_wait_seconds(state, now)
+        wait_seconds, reason = compute_usage_wait_seconds(
+            state,
+            now,
+            weekly_quota_reserve_percent=weekly_quota_reserve_percent,
+        )
         if wait_seconds <= 0:
             return
         print(
@@ -1220,6 +1299,7 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
     max_iterations = 0
     completion_promise = "DONE"
     weekly_limit_hours = os.environ.get("RALPH_WEEKLY_LIMIT_HOURS", "auto")
+    weekly_quota_reserve_percent = 0
     max_review_cycles = 5
     max_transient_retries = DEFAULT_MAX_TRANSIENT_RETRIES
     initial_backoff_seconds = DEFAULT_INITIAL_BACKOFF_SECONDS
@@ -1273,6 +1353,18 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
             if not (candidate == "auto" or re.fullmatch(r"\d+", candidate)):
                 raise RalphError("--weekly-limit-hours must be 'auto' or a non-negative integer")
             weekly_limit_hours = candidate
+            index += 2
+            continue
+        if token == "--weekly-quota-reserve":
+            if index + 1 >= len(args):
+                raise RalphError("--weekly-quota-reserve requires a number")
+            candidate = args[index + 1]
+            if not re.fullmatch(r"\d+", candidate):
+                raise RalphError("--weekly-quota-reserve must be an integer between 0 and 100")
+            reserve = int(candidate)
+            if reserve > 100:
+                raise RalphError("--weekly-quota-reserve must be between 0 and 100")
+            weekly_quota_reserve_percent = reserve
             index += 2
             continue
         if token == "--max-review-cycles":
@@ -1339,6 +1431,7 @@ def parse_loop_args(args: list[str], stdin_text: str | None) -> LoopOptions:
         max_iterations=max_iterations,
         completion_promise=completion_promise,
         weekly_limit_hours=weekly_limit_hours,
+        weekly_quota_reserve_percent=weekly_quota_reserve_percent,
         max_review_cycles=max_review_cycles,
         max_transient_retries=max_transient_retries,
         initial_backoff_seconds=initial_backoff_seconds,
@@ -1469,6 +1562,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
         prompt=options.prompt,
         max_iterations=options.max_iterations,
         max_review_cycles=options.max_review_cycles,
+        weekly_quota_reserve_percent=options.weekly_quota_reserve_percent,
         completion_promise=options.completion_promise,
         codex_args_serialized=codex_args_serialized,
         run_id=run_context.run_id,
@@ -1483,6 +1577,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
 
     ensure_usage_state(weekly_limit_seconds)
     refresh_codex_rate_limits()
+    enforce_limits = lambda: enforce_usage_limits(weekly_quota_reserve_percent=options.weekly_quota_reserve_percent)
 
     implementer_agent_prompt = read_prompt_file(Path(options.implementer_prompt_path))
     reviewer_agent_prompt = read_prompt_file(Path(options.reviewer_prompt_path))
@@ -1515,7 +1610,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
                     completion_promise=options.completion_promise,
                     max_iterations=options.max_iterations,
                     refresh_fn=refresh_codex_rate_limits,
-                    enforce_fn=enforce_usage_limits,
+                    enforce_fn=enforce_limits,
                     sleep_fn=sleep_fn,
                     max_transient_retries=options.max_transient_retries,
                     initial_backoff_seconds=options.initial_backoff_seconds,
@@ -1596,7 +1691,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
                     codex_args=options.codex_args,
                     completion_promise=options.completion_promise,
                     refresh_fn=refresh_codex_rate_limits,
-                    enforce_fn=enforce_usage_limits,
+                    enforce_fn=enforce_limits,
                     sleep_fn=sleep_fn,
                     max_transient_retries=options.max_transient_retries,
                     initial_backoff_seconds=options.initial_backoff_seconds,
@@ -1772,6 +1867,7 @@ def usage_summary_lines() -> list[str]:
     primary_pct = state.get("codex_primary_used_percent")
     secondary_pct = state.get("codex_secondary_used_percent")
     segments = state.get("segments", [])
+    reserve_text = read_frontmatter_value(STATE_FILE, "weekly_quota_reserve_percent") if STATE_FILE.exists() else ""
 
     if primary_reset > now:
         five_end = primary_reset
@@ -1788,14 +1884,8 @@ def usage_summary_lines() -> list[str]:
         lines.append(f"  5h_usage_percent: {float(primary_pct):.1f}%")
 
     if week_limit > 0:
-        if secondary_reset > now:
-            week_end = secondary_reset
-            week_start = week_end - week_window
-        else:
-            week_period = (now - epoch) // week_window
-            week_start = epoch + week_period * week_window
-            week_end = week_start + week_window
-        used_week = _overlap_sum(segments if isinstance(segments, list) else [], week_start, week_end)
+        weekly_metrics = weekly_usage_metrics(state, now)
+        used_week = int(weekly_metrics["used_week"])
         lines.append(f"  weekly_usage: {used_week}s / {week_limit}s")
         lines.append(f"  weekly_mode: {week_mode}")
     elif week_mode == "auto":
@@ -1805,6 +1895,17 @@ def usage_summary_lines() -> list[str]:
 
     if isinstance(secondary_pct, (int, float)):
         lines.append(f"  weekly_usage_percent: {float(secondary_pct):.1f}%")
+
+    weekly_metrics = weekly_usage_metrics(state, now)
+    remaining_percent = weekly_metrics["remaining_percent"]
+    remaining_source = str(weekly_metrics["remaining_percent_source"])
+    if isinstance(remaining_percent, (int, float)):
+        label = "weekly_remaining_percent"
+        if remaining_source:
+            label += f" ({remaining_source})"
+        lines.append(f"  {label}: {float(remaining_percent):.1f}%")
+    if reserve_text:
+        lines.append(f"  weekly_quota_reserve_percent: {reserve_text}")
 
     return lines
 
@@ -1822,6 +1923,7 @@ def cmd_status() -> int:
     review_cycle = read_frontmatter_value(STATE_FILE, "review_cycle")
     max_iterations = read_frontmatter_value(STATE_FILE, "max_iterations")
     max_review_cycles = read_frontmatter_value(STATE_FILE, "max_review_cycles")
+    weekly_quota_reserve_percent = read_frontmatter_value(STATE_FILE, "weekly_quota_reserve_percent")
     completion_promise = read_frontmatter_value(STATE_FILE, "completion_promise")
     started_at = read_frontmatter_value(STATE_FILE, "started_at")
     codex_args = read_frontmatter_value(STATE_FILE, "codex_args")
@@ -1833,6 +1935,7 @@ def cmd_status() -> int:
     print(f"  iteration: {iteration or '?'}")
     print(f"  max_review_cycles: {max_review_cycles or '?'}")
     print(f"  max_iterations: {max_iterations or '?'}")
+    print(f"  weekly_quota_reserve_percent: {weekly_quota_reserve_percent or '0'}")
     print(f"  completion_promise: {completion_promise or 'none'}")
     print(f"  started_at: {started_at or '?'}")
     print(f"  run_id: {run_id or '?'}")
