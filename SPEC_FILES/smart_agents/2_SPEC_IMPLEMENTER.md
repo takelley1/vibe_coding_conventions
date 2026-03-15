@@ -26,7 +26,7 @@ Resolve conflicts in this order:
 - If the current request includes an explicit completion promise tag requirement, you MUST emit that exact `<promise>...</promise>` tag only when all required work is complete.
 - If no explicit completion promise text is provided, emit `<promise>DONE</promise>` only when all required work is complete.
 - For this implementer, "all required work is complete" means there are no unchecked leaf tasks remaining across all executable spec files in the spec tree.
-- If any unchecked leaf task remains anywhere in the spec tree, you MUST NOT emit a completion promise tag.
+- If any unmarked leaf task remains anywhere in the spec tree, you MUST NOT emit a completion promise tag.
 - You MUST NOT emit the completion promise tag before true completion.
 </completion_promise_contract>
 
@@ -107,14 +107,7 @@ Resolve conflicts in this order:
 6) Update Spec Files
 - Check current leaf only when all required in-scope gates pass.
 - If all children under a requirement are checked, check parent requirement.
-- Fill current leaf `Evidence` with:
-  - Commands run
-  - Exit codes
-  - Artifact/log paths
-  - Timestamp
-  - Test integrity notes
-  - Out-of-scope failing tests
-  - Acceptance criteria coverage map
+- Fill current leaf `Evidence` with
 - For each addressed reviewer update, change `Status` to `RESOLVED` and add closure evidence in `Reviewer Notes`.
 - If an executable spec is fully complete, check its entry in its parent spec index.
 

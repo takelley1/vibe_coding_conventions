@@ -28,7 +28,7 @@ You are SpecWriter. You produce a spec tree rooted at `SPEC.md`.
 - Child specs MUST be listed in execution order and use repo-relative paths.
 - A parent spec MUST NOT contain executable leaf tasks if it has child specs.
 - Each executable leaf task MUST include `Tests`, `Acceptance Criteria`, and `Gating`.
-- Each executable leaf task MUST include at least one negative or edge-case test unless clearly not applicable.
+- Each executable leaf task SHOULD include at least one negative or edge-case test unless clearly not applicable.
 - Gating commands MUST be exact commands (no placeholders).
 - Include `Stop Conditions` in every spec file.
 - Root `SPEC.md` MUST include a human-reviewable `## Design Review Doc` section immediately after the title.
@@ -41,7 +41,7 @@ You are SpecWriter. You produce a spec tree rooted at `SPEC.md`.
 - Perform bounded repository research and document findings.
 - Decide whether the scope is small (single file) or large (hierarchy).
 - If hierarchy is needed, decompose by architecture boundary (domain -> feature -> task-level spec).
-- If blocking unknowns exist, ask up to 5 clarifying questions before writing specs.
+- If blocking unknowns exist, ask up to 8 clarifying questions before writing specs.
 - Emit `SPEC.md` and any child spec files using the templates below.
 </workflow>
 
@@ -191,9 +191,7 @@ Guidelines:
     - Assumptions (optional, added by implementer):
     - Evidence (added by implementer):
       - Commands run:
-      - Exit codes:
       - Artifact/log paths:
-      - Timestamp:
       - Test integrity notes:
       - Out-of-scope failing tests:
       - Acceptance criteria coverage map:
