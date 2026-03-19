@@ -174,6 +174,7 @@ def write_state_file(
     max_iterations: int,
     max_review_cycles: int,
     weekly_quota_reserve_percent: int,
+    no_weekly_pacing: bool,
     completion_promise: str,
     codex_args_serialized: str,
     run_id: str = "",
@@ -189,6 +190,7 @@ def write_state_file(
         "max_iterations": max_iterations,
         "max_review_cycles": max_review_cycles,
         "weekly_quota_reserve_percent": weekly_quota_reserve_percent,
+        "no_weekly_pacing": no_weekly_pacing,
         "completion_promise": completion_promise or None,
         "codex_args": codex_args_serialized or None,
         "run_id": run_id or None,
@@ -288,6 +290,7 @@ def run_manifest_payload(
         "started_at": read_frontmatter_value(STATE_FILE, "started_at"),
         "weekly_limit_hours": options.weekly_limit_hours,
         "weekly_quota_reserve_percent": options.weekly_quota_reserve_percent,
+        "no_weekly_pacing": options.no_weekly_pacing,
     }
 
 
@@ -598,6 +601,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
         max_iterations=options.max_iterations,
         max_review_cycles=options.max_review_cycles,
         weekly_quota_reserve_percent=options.weekly_quota_reserve_percent,
+        no_weekly_pacing=options.no_weekly_pacing,
         completion_promise=options.completion_promise,
         codex_args_serialized=codex_args_serialized,
         run_id=run_context.run_id,
@@ -630,6 +634,7 @@ def run_loop(options: LoopOptions, *, console: Console, sleep_fn: Callable[[int]
         format_duration_hms=format_duration_hms,
         format_resume_time=format_resume_time,
         weekly_quota_reserve_percent=options.weekly_quota_reserve_percent,
+        no_weekly_pacing=options.no_weekly_pacing,
     )
 
     implementer_agent_prompt = ralph_prompts.read_prompt_file(Path(options.implementer_prompt_path))
@@ -933,6 +938,7 @@ def usage_summary_lines() -> list[str]:
     secondary_pct = state.get("codex_secondary_used_percent")
     segments = state.get("segments", [])
     reserve_text = read_frontmatter_value(STATE_FILE, "weekly_quota_reserve_percent") if STATE_FILE.exists() else ""
+    no_weekly_pacing_text = read_frontmatter_value(STATE_FILE, "no_weekly_pacing") if STATE_FILE.exists() else ""
 
     if primary_reset > now:
         five_end = primary_reset
@@ -971,6 +977,8 @@ def usage_summary_lines() -> list[str]:
         lines.append(f"  {label}: {float(remaining_percent):.1f}%")
     if reserve_text:
         lines.append(f"  weekly_quota_reserve_percent: {reserve_text}")
+    if no_weekly_pacing_text:
+        lines.append(f"  no_weekly_pacing: {no_weekly_pacing_text}")
 
     return lines
 
@@ -995,6 +1003,7 @@ def cmd_status() -> int:
     max_iterations = read_frontmatter_value(STATE_FILE, "max_iterations")
     max_review_cycles = read_frontmatter_value(STATE_FILE, "max_review_cycles")
     weekly_quota_reserve_percent = read_frontmatter_value(STATE_FILE, "weekly_quota_reserve_percent")
+    no_weekly_pacing = read_frontmatter_value(STATE_FILE, "no_weekly_pacing")
     completion_promise = read_frontmatter_value(STATE_FILE, "completion_promise")
     started_at = read_frontmatter_value(STATE_FILE, "started_at")
     codex_args = read_frontmatter_value(STATE_FILE, "codex_args")
@@ -1007,6 +1016,7 @@ def cmd_status() -> int:
     print(f"  max_review_cycles: {max_review_cycles or '?'}")
     print(f"  max_iterations: {max_iterations or '?'}")
     print(f"  weekly_quota_reserve_percent: {weekly_quota_reserve_percent or '0'}")
+    print(f"  no_weekly_pacing: {no_weekly_pacing or 'false'}")
     print(f"  completion_promise: {completion_promise or 'none'}")
     print(f"  started_at: {started_at or '?'}")
     print(f"  run_id: {run_id or '?'}")

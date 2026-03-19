@@ -277,6 +277,7 @@ def compute_usage_wait_seconds(
     state: dict[str, object],
     now: int,
     weekly_quota_reserve_percent: int = 0,
+    no_weekly_pacing: bool = False,
     *,
     default_five_hour_limit_seconds: int = DEFAULT_FIVE_HOUR_LIMIT_SECONDS,
     five_hour_window_seconds: int = FIVE_HOUR_WINDOW_SECONDS,
@@ -334,7 +335,7 @@ def compute_usage_wait_seconds(
             if weekly_wait > wait_for:
                 wait_for = weekly_wait
                 reason = "weekly budget exhausted"
-        else:
+        elif not no_weekly_pacing:
             target = (week_limit * elapsed) / week_window
             if used_week > target and week_limit > 0:
                 next_ok = week_start + math.ceil((used_week * week_window) / week_limit)
@@ -360,6 +361,7 @@ def enforce_usage_limits(
     format_resume_time: Callable[[int, int], str],
     sleep_fn: Callable[[int], None] = time.sleep,
     weekly_quota_reserve_percent: int = 0,
+    no_weekly_pacing: bool = False,
 ) -> None:
     """Block until current usage budgets allow execution."""
 
@@ -374,6 +376,7 @@ def enforce_usage_limits(
             state,
             now,
             weekly_quota_reserve_percent=weekly_quota_reserve_percent,
+            no_weekly_pacing=no_weekly_pacing,
         )
         if wait_seconds <= 0:
             return

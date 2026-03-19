@@ -16,7 +16,7 @@ def usage_text() -> str:
     return """Ralph Wiggum for Codex
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--no-weekly-pacing] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
   ralph cancel
   ralph status
   ralph help
@@ -27,6 +27,7 @@ Notes:
   - --reviewer-prompt overrides the reviewer prompt template file for outer review.
   - If positional PROMPT and stdin are absent, --prompt file contents are used as PROMPT text.
   - --weekly-quota-reserve preserves the last N% of weekly quota; 0 disables it.
+  - --no-weekly-pacing disables the straight-line weekly pacing throttle.
   - Ralph writes structured run artifacts under .codex/runs/<run_id>/.
   - Use -- to pass flags directly to `codex exec` (e.g., -- --model o3).
 """
@@ -38,7 +39,7 @@ def loop_help_text() -> str:
     return """ralph loop
 
 Usage:
-  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
+  ralph loop [PROMPT...] [--prompt PATH] [--reviewer-prompt PATH] [--max-iterations N] [--completion-promise TEXT] [--weekly-limit-hours N|auto] [--weekly-quota-reserve N] [--no-weekly-pacing] [--max-review-cycles N] [--max-transient-retries N] [--initial-backoff-seconds N] [--max-backoff-seconds N] [--] [codex exec args]
 
 Options:
   --prompt PATH             Implementer prompt template file (default: SPEC_FILES/smart_agents/2_SPEC_IMPLEMENTER.md)
@@ -50,6 +51,7 @@ Options:
                             (default: $RALPH_WEEKLY_LIMIT_HOURS, or auto)
   --weekly-quota-reserve N  Preserve the last N percent of weekly quota; 0 disables it
                             (default: 0)
+  --no-weekly-pacing        Disable straight-line weekly pacing throttle
   --max-review-cycles N     Max outer reviewer cycles before failing (default: 5; 0 means unlimited)
   --max-transient-retries N Max transient codex exec retries (default: 3)
   --initial-backoff-seconds N
@@ -63,7 +65,7 @@ Notes:
   - Reviewer prompts include changed file paths from the latest implementer pass when git is available.
   - Ralph enforces a 5-hour runtime budget per 5-hour window and sleeps until reset.
   - Weekly pacing is auto-detected by default and can be overridden with a numeric hour budget.
-  - Weekly quota reserve is a hard lower bound and does not replace normal weekly pacing.
+  - Weekly quota reserve is a hard lower bound and does not replace normal weekly pacing unless --no-weekly-pacing is set.
   - Pass Codex flags after -- (e.g., -- --model o3 --sandbox workspace-write).
 """
 
@@ -85,6 +87,7 @@ def parse_loop_args(
     completion_promise = "DONE"
     weekly_limit_hours = os.environ.get("RALPH_WEEKLY_LIMIT_HOURS", "auto")
     weekly_quota_reserve_percent = 0
+    no_weekly_pacing = False
     max_review_cycles = 5
     max_transient_retries = default_max_transient_retries
     initial_backoff_seconds = default_initial_backoff_seconds
@@ -152,6 +155,10 @@ def parse_loop_args(
             weekly_quota_reserve_percent = reserve
             index += 2
             continue
+        if token == "--no-weekly-pacing":
+            no_weekly_pacing = True
+            index += 1
+            continue
         if token == "--max-review-cycles":
             if index + 1 >= len(args):
                 raise RalphError("--max-review-cycles requires a number")
@@ -216,6 +223,7 @@ def parse_loop_args(
         completion_promise=completion_promise,
         weekly_limit_hours=weekly_limit_hours,
         weekly_quota_reserve_percent=weekly_quota_reserve_percent,
+        no_weekly_pacing=no_weekly_pacing,
         max_review_cycles=max_review_cycles,
         max_transient_retries=max_transient_retries,
         initial_backoff_seconds=initial_backoff_seconds,

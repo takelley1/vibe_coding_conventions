@@ -26,6 +26,7 @@ class LoopOptions:
     initial_backoff_seconds: int
     max_backoff_seconds: int
     codex_args: list[str]
+    no_weekly_pacing: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
