@@ -1,0 +1,72 @@
+  - Fuel logistics for furnaces and smelters                                                                                                                            20:26:02 [128/40992]
+  - Water power transmission via axles and gears
+  - Wind power grids
+  - Mechanical clutch, gearbox, and power switching systems
+  - Pump stacks for irrigation, drainage, and pressure systems
+  - Pipe or channel networks for fluids
+  - Floodgates, sluices, and reservoir management
+  - Pressure logic for traps and defenses
+  - Automated bridge raising on alerts
+  - Sensor systems: motion, pressure plate, tripwire, water level
+  - Signal logic using levers and link networks
+  - Programmable logic chains for fortress automation
+  - Workshop job macros and production presets
+  - Conditional production rules based on stock levels
+  - Automatic tool replacement and maintenance orders
+  - Equipment loadout automation for squads
+  - Uniform distribution depots
+  - Ammunition supply chains
+  - Hospital supply automation
+  - Kitchen and tavern provisioning routes
+  - Farming irrigation automation
+  - Seed and fertilizer distribution loops
+  - Livestock feeding and pen supply logistics
+  - Butchery and tallow processing chains
+  - Waste removal and refuse routing
+  - Ash, slag, and tailings disposal systems
+  - Dangerous-material handling zones
+  - Recycling and salvage workshops
+  - Demolition and deconstruction recovery routing
+  - Building-material staging zones
+  - Construction crew assignment and batching
+  - Blueprint-driven auto-build sequences
+  - Housing assignment automation
+  - Bed, food, and clothing entitlement rules
+  - Immigration intake and starter-kit distribution
+  - Trade packing, caravan loading, and customs depots
+  - Import/export contracts and recurring shipments
+  - Price-aware trade automation
+  - Fortress-wide resource dashboards
+  - Throughput and bottleneck heatmaps
+  - Path congestion analysis tools
+  - Power network visualization
+  - Fluid flow visualization
+  - Logistics replay and debug timeline
+  - Remote outposts linked by supply lines
+  - Messenger/post system for distant job dispatch
+  - Seasonal logistics planning
+  - Weather-resistant infrastructure upgrades
+  - Conveyor belts for workshop-to-stockpile automation
+  - Mechanical rollers for directional item movement
+  - Minecart rail networks with loading/unloading stops
+  - Hauling depots and transfer stations
+  - Route templates and reusable logistics blueprints
+  - Priority lanes for military, hauling, or emergency traffic
+  - One-way road and corridor designations
+  - Traffic lights, gates, or signal-controlled intersections
+  - Bridge networks and raised causeways
+  - Tunnel boring and underground freight corridors
+  - Elevator or lift platforms for multi-z cargo movement
+  - Winches, cranes, and hoists for heavy materials
+  - Vertical shafts with bucket-chain hauling
+  - Port and dock logistics for river/coastal maps
+  - Warehouses with capacity classes and overflow routing
+  - Central distribution hubs
+  - Input/output buffers for every workshop
+  - Pull-based logistics requests from workshops
+  - Push-based logistics rules from stockpiles
+  - Standing orders for auto-haul and auto-refill
+  - Refill thresholds for critical goods
+  - Emergency reserve stockpiles
+  - Quarantine stockpiles for dangerous or spoiled goods
+  - Cold storage and preservation rooms
