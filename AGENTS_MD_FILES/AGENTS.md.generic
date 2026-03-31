@@ -1,31 +1,11 @@
-# Vibe Coding Conventions
-
-<instructions>
-You are an expert principal software engineer.
-
-YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
-
-## General
-- This project is critical -- please focus!
-- Don't be obsequious, sycophantic, excessively apologetic, overly verbose, or overly polite.
-- Don't say things like "Certainly!", "Absolutely!", "Of course!", "Understood", or "Got it"
-- Be concise—omit pleasantries, avoid repeating the prompt, and skip redundant scaffolding.
-- Automatically commit each change you make, following the commit rules.
-
-## Planning
-- Never alter the core tech stack without my explicit approval.
-- Think step-by-step before making a change.
-- Refactor code before making a large change.
 
 ## Code Style
-- Always prioritize the simplest solution over complexity.
-- Code must be easy to read and understand.
+- Never alter the core tech stack without my explicit approval.
 - Ensure all lines DO NOT have trailing whitespace.
-- Keep code as simple as possible. Avoid unnecessary complexity.
+- Prefer spaces instead of tabs.
 - Follow DRY and YAGNI coding principles.
 - Follow SOLID principles (e.g., single responsibility, dependency inversion) where applicable.
-- DO NOT over-engineer code!
-- Never duplicate code.
+- Never over-engineer or duplicate code.
 - Never write placeholder code, empty asserts that are always true, trivial tests, or otherwise useless non-production code.
 
 ## Variables
@@ -45,15 +25,30 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 ## Tests
 - Include comprehensive tests for major features; suggest edge case tests (e.g. invalid inputs).
 - Include unit and integration tests.
-- Use the red/green/refactor method for TDD.
+- Never remove a test just to pass gates.
+- If a bug is mentioned, write a regression test that reproduces it before changing production code.
+- Ignore writing tests for docs, .gitignore, general guidance, one-off commands or script, and scripts in `./scripts`
+
+- All implementation work MUST follow red/green/refactor:
+
+1. Red
+- Write or update the test for the active requirement.
+- Run the test to verify it fails.
+
+2. Green
+- Implement the smallest possible change to pass the failing test.
+- Re-run the same tests until passing.
+- Avoid unrelated behavior changes.
+
+3. Refactor
+- Refactor for clarity/performance without changing behavior.
+- Re-run the tests and local gates.
 
 ## Commits
-- Follow the existing `area: short summary` convention (for example, `tests: add runner fixtures`); limit the subject to 72 characters.
+- Follow the `area: short summary` convention (for example, `tests: add runner fixtures`); limit the subject to 72 characters.
+- The commit body should be a longer description in paragraph form discussing in more detail what the change was. Keep it at most 3 sentences.
 - Only commit after a feature has been completed and verified to be working.
-
-## Documentation:
-- Use the .scratchpad.txt file for temporary storage, plans, completed tasks, and managing your own memory.
-- Ignore the TODO.md file unless explicitly told to reference it, that's for humans to use.
+- Do not commit secrets, snapshots, or large generated artifacts.
 
 ## Security:
 - Implement security best-practices to protect against vulnerabilities.
@@ -70,6 +65,7 @@ YOU MUST FOLLOW ALL THESE RULES WHENEVER MAKING ANY CODE CHANGES!
 - Don't use arrays unless absolutely necessary.
 - Use `printf` instead of `echo`.
 - Encapsulate functionality in functions.
+- Prefer JSON output over plaintext.
 
 ## Examples
 
